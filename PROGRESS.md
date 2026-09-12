@@ -199,3 +199,33 @@ The `decimals()` call succeeding on the public endpoint also **validates the §5
   demo day.
 - `mainnet.base.org` is a **public, rate-limited** endpoint. Fine for cached per-asset
   `decimals()` lookups; likely not fine for G2's real payment traffic.
+
+### 2026-09-12 — hosted Postgres is not reachable from this container (egress is 443-only)
+
+Credentials for Supabase and Alchemy arrived. The Supabase connection failed, and the cause
+is the environment rather than the credentials:
+
+```
+aws-0-us-east-1.pooler.supabase.com:443   -> OPEN
+aws-0-us-east-1.pooler.supabase.com:5432  -> TimeoutError
+github.com:22                             -> TimeoutError   (control)
+github.com:443                            -> OPEN           (control)
+```
+
+**This container can only egress on port 443**, so no hosted Postgres is reachable from it,
+from any provider — `substreams-sink-sql` needs the native wire protocol on 5432. Separately,
+Supabase's direct host `db.<ref>.supabase.co` is IPv6-only (no A record) and this container
+has no IPv6; the IPv4 pooler exists but is blocked by the port rule anyway.
+
+**This does not block or weaken G1.** Its exit criterion is live Base rows in a `payments`
+table, and the *data* being live is what the Graph tracks require — only the storage location
+is local. G1 proceeds against local Postgres; `SUPABASE_DATABASE_URL` is preserved in `.env`
+for running the sink from a machine with unrestricted egress when we need persistence for
+demo day.
+
+Added `scripts/db-up.sh` — the local server ships stopped and needs `service postgresql start`
+after every container start, listens on localhost only, and the unix-socket path fails peer
+auth. The script handles all of it idempotently.
+
+Also recorded: passwords in connection URIs must be percent-encoded (`@` -> `%40`), or the
+URI parser reads the `@` as the host separator.

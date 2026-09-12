@@ -643,3 +643,58 @@ reproduced the headline figure exactly:
 
 The 10k run completed cleanly: exit 0, 10,145 blocks processed, 22 GiB scanned, 9.6 MiB
 egress. The 99.6 % figure is stable across windows, so it is safe to quote.
+
+---
+
+## 8. Environment constraints discovered while wiring G1
+
+### 8.1 `[DOC]` This container's egress is **port 443 only**
+
+Not a credentials problem and not provider-specific. Measured directly — the *same host*
+answers on 443 and times out on the Postgres ports:
+
+```
+aws-0-us-east-1.pooler.supabase.com:443   -> OPEN
+aws-0-us-east-1.pooler.supabase.com:5432  -> TimeoutError
+aws-0-us-east-1.pooler.supabase.com:6543  -> TimeoutError
+github.com:22                             -> TimeoutError   (control)
+github.com:443                            -> OPEN           (control)
+```
+
+⇒ **No external Postgres is reachable from this container, from any provider.**
+`substreams-sink-sql` speaks the native Postgres wire protocol on 5432, so it cannot reach a
+hosted database from here. This is an environment property, not something to fix in code.
+
+Consequences:
+- **G1 runs against the local Postgres.** Its exit criterion (`select count(*), sum(amount_usd)
+  from payments` over live Base rows) is fully satisfiable locally, so this does not block or
+  weaken the gate — the *data* is live, which is what the Graph tracks require. Only the
+  storage location is local.
+- For anything that must persist to demo day, run the sink from a machine with unrestricted
+  egress, using `SUPABASE_DATABASE_URL`.
+
+### 8.2 `[DOC]` Supabase direct hosts are IPv6-only
+
+`db.<ref>.supabase.co` has **no A record** — `socket.gethostbyname` fails with
+"No address associated with hostname", while `https://<ref>.supabase.co` resolves fine. This
+container has no global IPv6 address, so the direct host is unusable regardless of §8.1.
+
+The IPv4 path is the Supavisor pooler, `aws-0-<region>.pooler.supabase.com`, with the username
+form `postgres.<project-ref>`. Those hosts resolve over IPv4 — but are still blocked by §8.1,
+so the pooler does not rescue this container either.
+
+⇒ When taking the URI from the Supabase dashboard, copy the **pooler / "Connection pooling"**
+URI, not the direct one, on any IPv4-only network.
+
+### 8.3 Passwords in connection URIs must be percent-encoded
+
+A password containing `@` (or `:` `/` `?` `#`) breaks URI parsing — the `@` is read as the
+host separator. `Khushal@1855` must be written `Khushal%401855`. Generated automatically in
+`.env`; worth remembering when pasting a URI from any dashboard.
+
+### 8.4 Local Postgres needs an explicit start, and TCP is localhost-only
+
+The server ships installed but **stopped**, and `service postgresql start` is required after
+every container start. `listen_addresses = localhost`, so connect over `127.0.0.1` — the unix
+socket path fails with peer authentication unless running as the `postgres` OS user.
+`scripts/db-up.sh` does the whole dance idempotently.
