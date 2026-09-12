@@ -4,7 +4,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 
 | Gate | Status | Verify command | Result |
 |---|---|---|---|
-| G0a Privy signature gating | **blocked** | `node scripts/g0a-signature-gate.js` | Not written. Privy docs egress-blocked; condition schema unconfirmed. See NOTES.md §1.4 |
+| G0a Privy signature gating | **ready to run** | `node scripts/g0a-signature-gate.mjs` | Schema confirmed from privy-io SDK source; script written. Awaiting PRIVY_APP_ID / PRIVY_APP_SECRET |
 | G0b Substreams liveness | **blocked** | `substreams run x402-v0.1.0.spkg map_events -e $SUBSTREAMS_ENDPOINT -s -10000` | Awaiting Graph Market endpoint + token |
 | G1 Ledger | not started | `psql -c 'select count(*), sum(amount_usd) from payments'` | — |
 | G2 Fleet | not started | — | — |
@@ -24,3 +24,13 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
   `typed_data` parameter — the mechanism G0a depends on — but the verbatim shape is
   unconfirmed, so no code was written.
 - **Stopped per rules of engagement** (two failed verifies ⇒ ask, do not improvise).
+
+### 2026-09-12 — G0a unblocked, schema confirmed
+- `docs.privy.io` still egress-blocked. Routed around it by reading Privy's **own published
+  SDK source** on GitHub (`privy-io/node-sdk`), which is the wire format itself — a stronger
+  source than the docs.
+- **`EthereumTypedDataMessageCondition` confirmed.** A policy rule CAN key on a field inside
+  an EIP-712 message. G0a's premise holds; the README fallback is not needed.
+- Two corrections to the brief recorded (NOTES.md §1.5, §1.6): the "version guard" does not
+  exist as an API field, and the EIP-3009 field is `to`, not `recipient`.
+- Wrote `scripts/g0a-signature-gate.mjs`. Syntax-checked. Blocked only on credentials.

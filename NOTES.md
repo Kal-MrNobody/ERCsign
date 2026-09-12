@@ -14,47 +14,116 @@ Every claim carries a confidence tag. Only `[DOC]` may be coded against.
 
 ## 1. Privy policy engine
 
-### 1.1 Blocker: docs are unreachable from this environment
+### 1.1 Source of truth
 
-Attempted 2026-09-12, all failed:
+`docs.privy.io` and `privy.io` remain **egress-blocked** from this environment. Resolved by
+reading Privy's own published source on GitHub instead, which is strictly better than the
+docs — it is the wire format itself.
 
-| URL | Result |
+| Source | Grade |
 |---|---|
-| `docs.privy.io/wallets/using-wallets/ethereum/policies` | `EGRESS_BLOCKED` |
-| `privy.io/blog/turning-wallets-programmable-with-privy-policy-engine` | `EGRESS_BLOCKED` |
-| `npmjs.com/package/@privy-io/server-auth` | HTTP 403 |
+| `privy-io/node-sdk` → `src/resources/policies.ts` | `[DOC]` authoritative |
+| `privy-io/node-sdk` → `src/resources/wallets/wallets.ts` | `[DOC]` authoritative |
+| `privy-io/node-sdk` → `api.md` | `[DOC]` type index |
+| `privy-io/privy-agentic-wallets-skill` → `references/*.md` | `[DOC]` official, example-grade |
 
-`docs.privy.io` and `privy.io` are both blocked by the network egress proxy.
-**No Privy claim below has reached `[DOC]`. No Privy code may be written yet.**
+### 1.2 G0a IS SUPPORTED — fallback not needed
 
-### 1.2 What search returned (NOT yet safe to code against)
+`[DOC]` A policy condition **can read fields inside an EIP-712 message**:
 
-- `[SEARCH]` Policy document has `version` (`"1.0"`), `name`, `chain_type`, `rules`, `owner`.
-- `[SEARCH]` A rule has `name`, `method`, `conditions[]`, `action`.
-- `[SEARCH]` A condition has `field_source`, `field`, `operator`, `value`.
-- `[SEARCH]` `action` is `ALLOW` or `DENY`. DENY beats ALLOW. No rule matched ⇒ DENY.
-  - Consistent with `[PROMPT]` default-deny. Happy-path ALLOW must exist before layering DENY.
-- `[SEARCH]` `eth_signTypedData_v4` is a supported `method`. The engine evaluates only rules
-  whose `method` matches the inbound RPC method.
-- `[SEARCH]` A `field_source` of `ethereum_typed_data_message` exists and **requires a
-  `typed_data` parameter that declares the schema of the typed message.**
-  - This is the load-bearing claim for **G0a**: it implies a rule can read *inside* an
-    EIP-712 message (e.g. the EIP-3009 `to` field), not just match the method name.
-  - Exact shape of `typed_data` is **unknown**. This is the single highest-risk unknown
-    in the project.
+```ts
+export interface EthereumTypedDataMessageCondition {
+  field: string;                                 // free-form path, e.g. "to"
+  field_source: 'ethereum_typed_data_message';
+  operator: ConditionOperator;
+  typed_data: TypedDataInput;                    // declares the schema to parse against
+  value: ConditionValue;
+}
 
-### 1.3 Unverified brief assertions
+export interface TypedDataInput {                // NOTE: schema only, no domain/message
+  primary_type: string;
+  types: { [key: string]: Array<{ name: string; type: string }> };
+}
+```
 
-- `[PROMPT]` Max one policy per wallet ⇒ adding a rule is read-modify-write with a version guard.
-- `[PROMPT]` Intents expire 72h after creation.
+There is also `EthereumTypedDataDomainCondition` with
+`field: 'chainId' | 'verifyingContract' | 'chain_id' | 'verifying_contract'`, usable to pin
+the DENY to USDC-on-Base specifically.
 
-### 1.4 Open questions blocking G0a
+⇒ **The G0a README fallback (pre-sign gate in our own x402 client) is NOT required.**
+Enforcement happens inside Privy, at signing time, exactly as the mission requires.
 
-1. Exact JSON for an `ethereum_typed_data_message` condition, including `typed_data`.
-2. Which `operator` values exist (`eq`? `in`? case sensitivity on addresses?).
-3. Is the EIP-3009 recipient addressable as `to` or `message.to`? EIP-3009
-   `TransferWithAuthorization` names the recipient `to`, not `recipient`.
-4. Does a policy update return/accept a version for optimistic concurrency?
+### 1.3 Confirmed enums
+
+```ts
+type PolicyAction      = 'ALLOW' | 'DENY';
+type ConditionValue    = string | Array<string>;
+type ConditionOperator = 'eq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in'
+                       | 'in_condition_set' | 'contains' | 'starts_with' | 'ends_with';
+type PolicyMethod      = 'eth_sendTransaction' | 'eth_signTransaction'
+                       | 'eth_signUserOperation' | 'eth_signTypedData_v4' | 'personal_sign'
+                       | 'eth_sign7702Authorization' | 'wallet_sendCalls' | /* ...solana, tron,
+                          xrpl, earn_deposit, earn_withdraw, transfer... */ '*';
+```
+
+`[DOC]` Full `PolicyCondition` union also includes `EthereumCalldataCondition`,
+`AggregationCondition`, `MessageSigningCondition`, `SystemCondition`, `ConditionSetItem`
+(via `in_condition_set`). `AggregationCondition` is worth revisiting at G3 for velocity rules.
+
+### 1.4 Endpoints and auth
+
+| Operation | Call | Grade |
+|---|---|---|
+| Create policy | `POST /v1/policies` | `[DOC]` |
+| Get policy | `GET /v1/policies/{policy_id}` | `[DOC]` |
+| Update policy | `PATCH /v1/policies/{policy_id}` | `[DOC]` |
+| **Append one rule** | `POST /v1/policies/{policy_id}/rules` | `[DOC]` |
+| Delete rule | `DELETE /v1/policies/{policy_id}/rules/{rule_id}` | `[DOC]` |
+| Create wallet | `POST /v1/wallets` body `{chain_type, policy_ids[]}` | `[DOC]` |
+| Sign / send | `POST /v1/wallets/{wallet_id}/rpc` | `[DOC]` |
+| Base URL | `https://api.privy.io` | `[SEARCH]` — verified on first live call |
+
+`[DOC]` Auth: HTTP Basic (`PRIVY_APP_ID`:`PRIVY_APP_SECRET`) **plus** a `privy-app-id` header.
+
+`[DOC]` Relevant headers:
+- `privy-idempotency-key` — create only, dedupes within a 24h window
+- `privy-authorization-signature` — comma-separated when multiple signatures required
+- `privy-request-expiry` — Unix ms deadline
+
+### 1.5 `[CORRECTION]` The brief's "version guard" does not exist
+
+The brief states adding a rule is *"a read-modify-write with a version guard."*
+Per `PolicyUpdateParams`, there is **no** ETag / version / concurrency-token parameter.
+`version` is the literal `'1.0'` schema version, not an optimistic-concurrency token.
+
+What actually exists:
+- `PATCH /v1/policies/{id}` takes `rules?: Array<PolicyRuleRequestBody>` — a **whole-array
+  replace**, so a naive read-modify-write genuinely can clobber a concurrent edit.
+- `POST /v1/policies/{id}/rules` **appends a single rule**, sidestepping the race entirely.
+
+⇒ **G5 must append via `POST .../rules`, not PATCH the full array.** Our safety comes from
+append-semantics + `privy-authorization-signature`, not from a version guard. The brief's
+read-modify-write instruction is superseded.
+
+### 1.6 `[CORRECTION]` Field name is `to`, not `recipient`
+
+Brief says key the DENY on the *recipient*. EIP-3009 `TransferWithAuthorization` names that
+field **`to`**. Since `EthereumTypedDataMessageCondition.field` is a free-form `string`, the
+rule must read `field: "to"`. The x402 substream separately calls it `recipient`. Confirms §2.1.
+
+### 1.7 `[DOC]` Confirms the brief
+
+- Max **1** policy per wallet (`policy_ids` documented "max 1"). ✓ brief
+- Default-deny: unmatched request ⇒ DENY; `DENY` beats `ALLOW`. ✓ brief
+  ⇒ an explicit ALLOW happy-path rule is mandatory before any DENY is meaningful.
+- `owner_id` accepts a **key quorum ID** — this is the G5 quorum mechanism.
+
+### 1.8 Still open
+
+1. Base URL confirmation (first live call settles it).
+2. Whether `field` supports dotted paths for nested structs. Irrelevant for EIP-3009
+   (flat), may matter later.
+3. Intent expiry (brief says 72h) — not yet seen in source.
 
 ---
 
