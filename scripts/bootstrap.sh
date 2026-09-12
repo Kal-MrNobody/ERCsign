@@ -23,6 +23,34 @@ else
   echo "Installed: $(substreams --version)"
 fi
 
+# --- Rust wasm target (G1 module builds to wasm32) ---------------------------
+if command -v rustup >/dev/null 2>&1; then
+  if rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
+    echo "wasm32-unknown-unknown already installed"
+  else
+    echo "Adding wasm32-unknown-unknown target..."
+    rustup target add wasm32-unknown-unknown
+  fi
+else
+  echo "WARNING: rustup not found - needed to build the papertrail module" >&2
+fi
+
+# --- substreams-sink-sql (G1 Postgres sink) ----------------------------------
+SINK_VERSION="${SINK_VERSION:-4.6.0}"
+if command -v substreams-sink-sql >/dev/null 2>&1; then
+  echo "substreams-sink-sql already installed: $(substreams-sink-sql --version)"
+else
+  echo "Installing substreams-sink-sql v${SINK_VERSION}..."
+  tmp="$(mktemp -d)"
+  curl -sSLf --max-time 180 \
+    "https://github.com/streamingfast/substreams-sink-sql/releases/download/v${SINK_VERSION}/substreams-sink-sql_linux_x86_64.tar.gz" \
+    -o "$tmp/sink.tgz"
+  tar xzf "$tmp/sink.tgz" -C "$tmp" substreams-sink-sql
+  install -m755 "$tmp/substreams-sink-sql" /usr/local/bin/substreams-sink-sql
+  rm -rf "$tmp"
+  echo "Installed: $(substreams-sink-sql --version)"
+fi
+
 # --- prebuilt Substreams packages -------------------------------------------
 # NOTE: fetched from raw.githubusercontent.com, NOT api.github.com. The GitHub
 # API is scoped to session repositories and 403s on third-party repos; the raw

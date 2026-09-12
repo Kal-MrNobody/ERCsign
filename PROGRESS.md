@@ -175,3 +175,27 @@ Other findings (NOTES.md §7):
   cannot be.
 
 Both G0 kill tests are now passed. Next: G1.
+
+### 2026-09-12 — G1 environment: self-served, nothing was actually blocking
+
+I had flagged `BASE_RPC_URL` and `DATABASE_URL` as things to ask for. Checked before asking,
+and both were self-servable, so G1 is unblocked with no input needed:
+
+| Piece | Status |
+|---|---|
+| Base RPC | `https://mainnet.base.org` — verified with a live `eth_call`: `decimals()` on USDC returns **6** |
+| Postgres | server 16 was installed but down; started it, created `redflag` DB |
+| Rust wasm | `rustup target add wasm32-unknown-unknown` |
+| `substreams-sink-sql` | v4.6.0 installed |
+| `substreams` CLI | v1.16.6 (already) |
+| Graph Market auth | working via `scripts/substreams-auth.sh` |
+
+The `decimals()` call succeeding on the public endpoint also **validates the §5.3 plan** for
+`store_token_decimals` before a line of it is written — the eth_call approach works.
+
+⚠️ Two caveats, neither blocking now but both real for the demo:
+- The container is **ephemeral**, so the local Postgres dies with the session. Fine for
+  building and for G1's verify; a hosted DB is needed for anything that must persist to
+  demo day.
+- `mainnet.base.org` is a **public, rate-limited** endpoint. Fine for cached per-asset
+  `decimals()` lookups; likely not fine for G2's real payment traffic.
