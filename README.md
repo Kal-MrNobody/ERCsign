@@ -25,3 +25,20 @@ Pre-G0. See `PROGRESS.md` for the gate ledger and `NOTES.md` for confirmed API s
 ```bash
 cp .env.example .env   # then fill in
 ```
+
+## Network requirements
+
+This project talks to live third-party APIs by design — mocked or local-only data
+disqualifies the Graph tracks. When running inside a sandboxed environment, these hosts must
+be on the network egress allowlist:
+
+| Host | Needed for |
+|---|---|
+| `api.privy.io` | Privy wallet + policy API (G0a, G2, G5) |
+| `docs.privy.io` | Privy documentation lookups |
+| `*.thegraph.com` | Graph Market Substreams endpoint, Subgraph Studio (G0b, G1, G3) |
+| `mainnet.base.org` | Base RPC (G2) |
+| `*.pinax.network` | Prebuilt Substreams packages (G1) |
+| `bazantic.com` | Gateway and Recipes (G7) |
+
+A blocked host surfaces as `403 Host not in allowlist: <host>`.

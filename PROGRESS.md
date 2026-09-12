@@ -4,7 +4,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 
 | Gate | Status | Verify command | Result |
 |---|---|---|---|
-| G0a Privy signature gating | **ready to run** | `node scripts/g0a-signature-gate.mjs` | Schema confirmed from privy-io SDK source; script written. Awaiting PRIVY_APP_ID / PRIVY_APP_SECRET |
+| G0a Privy signature gating | **blocked (egress)** | `node scripts/g0a-signature-gate.mjs` | Credentials OK, script OK. `api.privy.io` not in network egress allowlist -> HTTP 403 at step 1 |
 | G0b Substreams liveness | **blocked** | `substreams run x402-v0.1.0.spkg map_events -e $SUBSTREAMS_ENDPOINT -s -10000` | Awaiting Graph Market endpoint + token |
 | G1 Ledger | not started | `psql -c 'select count(*), sum(amount_usd) from payments'` | — |
 | G2 Fleet | not started | — | — |
@@ -34,3 +34,16 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 - Two corrections to the brief recorded (NOTES.md §1.5, §1.6): the "version guard" does not
   exist as an API field, and the EIP-3009 field is `to`, not `recipient`.
 - Wrote `scripts/g0a-signature-gate.mjs`. Syntax-checked. Blocked only on credentials.
+
+### 2026-09-12 — G0a blocked at the network layer
+- Credentials received and written to gitignored `.env` (verified via `git check-ignore`).
+- First live run failed at step 1, before any Privy logic was exercised:
+
+      403 Host not in allowlist: api.privy.io.
+      Add this host to your network egress settings to allow access.
+
+- This is **not** a credential or code failure. The sandbox egress policy does not permit
+  `api.privy.io`, the same class of block that hid `docs.privy.io`.
+- Not retried: the error is deterministic, so a retry spends a cycle for no information.
+- **Unblocks when the environment's egress allowlist includes the hosts in README "Network
+  requirements".**
