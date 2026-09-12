@@ -4,7 +4,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 
 | Gate | Status | Verify command | Result |
 |---|---|---|---|
-| G0a Privy signature gating | **blocked (credentials)** | `node scripts/g0a-signature-gate.mjs` | Egress unblocked; script verified line-by-line against Privy's wire format. Needs `PRIVY_APP_ID` + `PRIVY_APP_SECRET` re-supplied (`.env` did not survive the container) |
+| G0a Privy signature gating | **done** ✅ | `node --env-file=.env scripts/g0a-signature-gate.mjs` | **PASS.** Sign → 200; append DENY on `message.to`; identical payload → **400 `policy_violation`**; different vendor, same wallet → 200. Deterministic over 3 runs. Fallback NOT needed |
 | G0b Substreams liveness | **blocked (credentials)** | `substreams info x402.spkg` (done) / `substreams run ... -e $SUBSTREAMS_ENDPOINT -s -10000` | CLI v1.16.6 installed, real spkg pulled + inspected, `map_events` and all 13 Payment fields confirmed. Needs Graph Market endpoint + token |
 | G1 Ledger | not started | `psql -c 'select count(*), sum(amount_usd) from payments'` | — |
 | G2 Fleet | not started | — | — |
@@ -94,3 +94,41 @@ surfacing now rather than at G1:
 - **Good news for ground truth #1:** Base is an EXTENDED-detail chain, so the trace-dependent
   `transferWithAuthorization` calldata decode — which is what makes `payer` trustworthy — is
   available on our target chain. Confirm `payer` is non-empty on the first live G0b row.
+
+### 2026-09-12 — G0a PASSED
+
+Credentials arrived; ran the kill test live against `api.privy.io`.
+
+```
+[3] Sign TransferWithAuthorization to 0x…dEaD          -> 200 SIGNED
+[4] Append DENY on message.to == 0x…dEaD               -> rule created
+[5] Sign the BYTE-IDENTICAL payload again              -> 400 REFUSED  (policy_violation)
+[6] Sign to a DIFFERENT vendor, same wallet + policy   -> 200 SIGNED
+```
+
+**The mission's central mechanism is confirmed real.** Privy refuses a signature based on a
+field *inside* the EIP-712 message, server-side, at signing time. The agent never obtains a
+signature to hand to a facilitator. The README fallback is not needed and has been dropped.
+
+Step 6 was added during the run and is load-bearing: steps 1–5 alone would look identical if
+the DENY were blocking *all* typed-data signing, so the control proves the rule is keyed on
+`to` specifically. It immediately caught a false signal (see below).
+
+Findings recorded in NOTES.md §6:
+
+- **Four API constraints the SDK types do not express** (all found via live 400s): typed-data
+  rules need ≥1 condition, so there is no blanket ALLOW; `chainId` rejects operator `in`;
+  `chainId` values must be numerical strings; rule names are capped at 50 chars, so G3 must
+  generate names from a truncated address.
+- **Privy validates addresses against their EIP-55 checksum** and rejects a mismatch with
+  `invalid_data` *before* the policy engine runs. Both that and a real refusal are 400s, so
+  the assertions now require `code === 'policy_violation'` — otherwise the test could report
+  a result for entirely the wrong reason. This is exactly what step 6 caught.
+- **Policy address matching is case-insensitive — verified, not assumed.** Our substreams
+  emits lowercase and agents may sign checksummed; had this been case-sensitive, every rule
+  G3 generates would have silently failed open. A lowercase rule refuses a checksummed
+  payload. No normalisation layer needed.
+- Rules carry a server-assigned `id`, so `DELETE /v1/policies/{id}/rules/{rule_id}` gives G5
+  a rollback path for a mistaken enforcement.
+
+Next: G0b, which needs the Graph Market endpoint + token.

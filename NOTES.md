@@ -400,3 +400,107 @@ message Transaction {
 
 `Transaction.from` is the facilitator. `payment.payer` is two levels down. Never join on the
 former. See §4.6.
+
+---
+
+## 6. G0a RESULT — PASS. Privy enforces on an in-message field at signing time.
+
+Run live against `api.privy.io` on 2026-09-12. Deterministic across repeat runs.
+
+```
+[3] Sign TransferWithAuthorization to 0x…dEaD          -> 200 SIGNED
+[4] Append DENY on message.to == 0x…dEaD               -> rule created
+[5] Sign the BYTE-IDENTICAL payload again              -> 400 REFUSED
+[6] Sign to a DIFFERENT vendor, same wallet + policy   -> 200 SIGNED
+```
+
+Refusal shape:
+
+```json
+{"error":"RPC request denied due to policy violation","code":"policy_violation"}
+```
+
+⇒ **The mission's central mechanism is real.** A policy rule keyed on a field *inside* the
+EIP-712 message refuses the signature, server-side, at the moment of signing. The agent
+never gets a signature to hand to a facilitator, so there is nothing to broadcast.
+
+⇒ **The README fallback (a pre-sign gate in our own x402 client) is NOT needed** and should
+not be mentioned as the design. Enforcement is in Privy, not in our code — which is the
+whole point, since our code is what an agent could route around.
+
+### 6.1 Step 6 is load-bearing — do not remove it
+
+Steps 1–5 alone **prove nothing**. A DENY that blocked *every* `eth_signTypedData_v4` would
+produce an identical 1–5 transcript. Step 6 signs to a different recipient on the same
+wallet under the same policy and requires SUCCESS, which is what establishes that the
+refusal is keyed on `to` specifically rather than on the method.
+
+It earned its keep immediately: it caught a false signal during development (§6.3).
+
+### 6.2 `[CORRECTION]` Four API constraints the SDK types do not express
+
+All four were discovered by live 400s. None appear in `policies.ts`.
+
+| # | Constraint | Error |
+|---|---|---|
+| 1 | `eth_signTypedData_v4` rules **must have ≥1 condition** — `conditions: []` is rejected | `The 'eth_signTypedData_v4' method must have at least one condition` |
+| 2 | `chainId` does **not** support operator `in` | `Operator 'in' is not supported for the 'chainId' field` |
+| 3 | `chainId` value must be a **numerical string** — `'8453'`, not `'0x2105'`, not `8453` | `Condition value must be a numerical string` |
+| 4 | Rule `name` must be **< 50 characters** — a bare `0x` address does not fit | `Rule name must be fewer than 50 characters` |
+
+Constraint 1 has a design consequence: there is no such thing as a blanket "ALLOW all typed
+data" happy path. Every ALLOW must be scoped. Ours is scoped to `chainId == 8453`, which is
+more honest anyway. Constraint 4 means G3's generated rule names must be built from a
+**truncated** address, never the full one.
+
+### 6.3 `[DOC]` Privy validates addresses against their EIP-55 checksum
+
+A mixed-case address in the typed message is validated as a checksummed address and rejected
+**before the policy engine runs**:
+
+```json
+{"error":"Address \"0x…C0fe\" is invalid.\n\n- Address must be a hex value of 20 bytes (40 hex characters).\n- Address must match its checksum counterpart.","code":"invalid_data"}
+```
+
+This is why the assertions now check `code === 'policy_violation'` rather than just `!ok`.
+A malformed payload and a policy refusal are both 400s, and conflating them would let the
+kill test report a pass — or an inconclusive — for entirely the wrong reason.
+
+⇒ Any address we synthesise into a payload must be **all-lowercase or correctly
+checksummed**. All-lowercase is the safe default.
+
+### 6.4 `[DOC]` Policy matching on addresses is CASE-INSENSITIVE — verified
+
+This was a real fail-open risk worth proving rather than assuming: our substreams emits
+**lowercase** addresses, so G3 will generate rules in lowercase, but an agent may sign a
+**checksummed** payload. If matching were case-sensitive, every generated rule would
+silently fail open.
+
+Probe: DENY rule written with the lowercase form, then sign both casings.
+
+```
+rule value   : 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913  (lowercase)
+sign lower   : 400 REFUSED
+sign checksum: 400 REFUSED
+```
+
+⇒ **Case-insensitive. Safe.** A lowercase rule refuses a checksummed payload. No address
+normalisation layer is required between the ledger and the policy writer. Re-verify if Privy
+ever changes matching semantics.
+
+### 6.5 Observed stored-policy shape (for G5 rule merging)
+
+Privy returns rules with a server-assigned `id`, and preserves the submitted `value` string
+verbatim (casing included) even though *matching* is case-insensitive:
+
+```json
+{"id":"ibbzhphgcey6fq786mscel84","name":"Block vendor 0x000000..00dEaD",
+ "method":"eth_signTypedData_v4","action":"DENY",
+ "conditions":[{"field_source":"ethereum_typed_data_message","field":"to",
+   "typed_data":{"types":{"TransferWithAuthorization":[...]},
+                 "primary_type":"TransferWithAuthorization"},
+   "operator":"eq","value":"0x000000000000000000000000000000000000dEaD"}]}
+```
+
+Note the rule `id` — G5 can use `DELETE /v1/policies/{id}/rules/{rule_id}` to roll a rule
+back, which is the "undo" path for a mistaken enforcement.

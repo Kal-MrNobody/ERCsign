@@ -51,13 +51,25 @@ A blocked host surfaces as `403 Host not in allowlist: <host>`.
 
 Both G0 kill tests are verified as far as they can be without credentials:
 
-- **G0a** — the Privy signature-gating premise holds. `EthereumTypedDataMessageCondition`
-  lets a policy rule key on a field *inside* an EIP-712 message, so enforcement happens in
-  Privy at signing time and the pre-sign-gate fallback is **not** needed. The kill-test
-  script is verified call-by-call against Privy's published wire format.
+- **G0a — PASSED.** ✅ Verified live: sign an EIP-3009 authorization → `200`; add a DENY
+  rule keyed on the `to` field *inside* the typed message; sign the byte-identical payload
+  again → **`400 policy_violation`**; sign to a different vendor on the same wallet →
+  `200`. Enforcement is server-side at signing time, so the agent never obtains a signature
+  to hand to a facilitator — and the pre-sign-gate fallback is **not** needed.
 - **G0b** — `substreams` v1.16.6 installed, the genuine `x402-v0.1.0.spkg` fetched and
   inspected: `map_events -> proto:evm.x402.v1.Events`, and all 13 `Payment` fields confirmed
   from the package's own descriptor.
 
-Both now need only live credentials. See `PROGRESS.md` for the gate ledger and `NOTES.md`
-for every confirmed API shape with its evidence grade.
+G0b needs the Graph Market endpoint + token. See `PROGRESS.md` for the gate ledger and
+`NOTES.md` for every confirmed API shape with its evidence grade.
+
+### Reproducing G0a
+
+```bash
+cp .env.example .env    # set PRIVY_APP_ID and PRIVY_APP_SECRET
+node --env-file=.env scripts/g0a-signature-gate.mjs
+```
+
+Exit code 0 means Privy refused the second signature *and* still signed for a different
+vendor. The script fails loudly rather than reporting a pass if either half does not hold —
+a refusal that is not `code: policy_violation` is treated as invalid, not as success.
