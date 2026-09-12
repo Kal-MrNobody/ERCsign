@@ -4,8 +4,8 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 
 | Gate | Status | Verify command | Result |
 |---|---|---|---|
-| G0a Privy signature gating | **blocked (egress)** | `node scripts/g0a-signature-gate.mjs` | Credentials OK, script OK. `api.privy.io` not in network egress allowlist -> HTTP 403 at step 1 |
-| G0b Substreams liveness | **blocked** | `substreams run x402-v0.1.0.spkg map_events -e $SUBSTREAMS_ENDPOINT -s -10000` | Awaiting Graph Market endpoint + token |
+| G0a Privy signature gating | **blocked (credentials)** | `node scripts/g0a-signature-gate.mjs` | Egress unblocked; script verified line-by-line against Privy's wire format. Needs `PRIVY_APP_ID` + `PRIVY_APP_SECRET` re-supplied (`.env` did not survive the container) |
+| G0b Substreams liveness | **blocked (credentials)** | `substreams info x402.spkg` (done) / `substreams run ... -e $SUBSTREAMS_ENDPOINT -s -10000` | CLI v1.16.6 installed, real spkg pulled + inspected, `map_events` and all 13 Payment fields confirmed. Needs Graph Market endpoint + token |
 | G1 Ledger | not started | `psql -c 'select count(*), sum(amount_usd) from payments'` | — |
 | G2 Fleet | not started | — | — |
 | G3 Brains | not started | — | — |
@@ -47,3 +47,50 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 - Not retried: the error is deterministic, so a retry spends a cycle for no information.
 - **Unblocks when the environment's egress allowlist includes the hosts in README "Network
   requirements".**
+
+### 2026-09-12 — session 2: egress restored, both G0 gates verified as far as credentials allow
+
+- **The egress block is gone.** Re-tested at session start: `api.privy.io` answers (404 at
+  `/`, i.e. the API, not the proxy), `docs.privy.io` is 200, and every other partner host
+  resolves. Node's built-in `fetch` reaches Privy too. NOTES.md §4.1.
+- **`.env` did not survive the container.** The credentials the previous session received
+  are gone; the container is reclaimed between sessions. This is now the only G0a blocker.
+- **G0a script verified against the wire format, not just re-read.** Pulled Privy's own
+  `node-sdk` source and confirmed every call the script makes. Closed a real bug risk: the
+  RPC param is `typed_data` with `primary_type` (snake_case), while `domain` is a free-form
+  passthrough that must keep EIP-712 camelCase. The script already had both right. §4.3
+- **G0b groundwork done without credentials.** Installed `substreams` v1.16.6, pulled the
+  genuine `x402-v0.1.0.spkg`, and inspected it. `map_events -> proto:evm.x402.v1.Events`
+  confirmed, and the package doc states verbatim that it applies no facilitator filtering —
+  confirming our contribution. All 13 `Payment` fields confirmed from the descriptor. §4.5
+- **Schema correction found for G1.** `Payment` is nested at
+  `Events.transactions[].logs[].payment`; `transaction.from` (the facilitator) sits one level
+  above `payment.payer` (the real spender). The nesting makes the misattribution bug the
+  brief warns about easy to write by accident. §4.6
+- **Open before the G1 schema freeze:** the proto has `Log.block_index` and `Log.ordinal`
+  but no `log_index`, so `payment_id = tx_hash:log_index` needs a live row to settle. §4.7
+- Stopped to ask for credentials rather than improvise.
+
+### 2026-09-12 — session 2 addendum: a G1 assumption in the brief does not hold
+
+Investigated the G1 composition before writing any of it, and found a blocker worth
+surfacing now rather than at G1:
+
+- **`erc20-tokens` does not carry `decimals`.** The brief's G1 specifies "USD normalisation
+  via token decimals" from that package. It has 66 message types, all protocol-specific
+  admin/lifecycle events (USDC mint/burn/blacklist/AuthorizationUsed, USDT, WBTC, SAI,
+  stETH, WETH) — no `decimals`, no `symbol`, not even a plain ERC-20 `Transfer`.
+- **No prebuilt Pinax package has it.** Checked five (`erc20-tokens`, `erc20-transfers`,
+  `erc20-balances`, `evm-contracts`, `evm-transfers`): zero occurrences of `decimals`.
+- **Proposed resolution** (NOTES.md §5.3): source `decimals()` with an `eth_call` per
+  newly-seen asset, memoised in a store, built as a standalone reusable
+  `store_token_decimals` module. Pinax already does RPC-from-module in `erc20/balances`, so
+  it is idiomatic. This converts the gap into a *reusable composable module*, which is
+  exactly what The Graph's Composable track rewards. Hardcoding `USDC = 6` is rejected
+  because G6 requires the tooling to work against any fleet.
+- **Good news for the composition story:** Pinax's `evm-transfers` aggregator composes
+  erc20_transfers + erc20_tokens + native_transfers and does *not* include the x402 package.
+  So composing `x402:map_events` with `erc20_tokens:map_events` is genuinely novel work.
+- **Good news for ground truth #1:** Base is an EXTENDED-detail chain, so the trace-dependent
+  `transferWithAuthorization` calldata decode — which is what makes `payer` trustworthy — is
+  available on our target chain. Confirm `payer` is non-empty on the first live G0b row.
