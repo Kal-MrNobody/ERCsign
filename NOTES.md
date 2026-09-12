@@ -504,3 +504,142 @@ verbatim (casing included) even though *matching* is case-insensitive:
 
 Note the rule `id` — G5 can use `DELETE /v1/policies/{id}/rules/{rule_id}` to roll a rule
 back, which is the "undo" path for a mistaken enforcement.
+
+---
+
+## 7. G0b RESULT — PASS. 12,351 live x402 payments from The Graph Market.
+
+Run 2026-09-12 against Base mainnet via a Graph Market endpoint.
+
+```
+substreams run vendor/x402-v0.1.0.spkg map_events \
+  -e base-mainnet.streamingfast.io:443 -s -10000 -t 0 -o jsonl
+```
+
+```
+blocks processed : 6,180+   (51,221,476 .. 51,231,570)
+payments         : 12,351
+```
+
+Non-zero by three orders of magnitude. No need for the fallback (widen window / try
+Ethereum or Polygon).
+
+### 7.1 `[CORRECTION]` The API key must be exchanged for a JWT
+
+The brief implies `SUBSTREAMS_API_TOKEN` holds the key. It does not — a `server_`-prefixed
+key is **rejected** by the endpoints:
+
+```
+base.substreams.pinax.network:443 -> unauthenticated: invalid access token
+base-mainnet.streamingfast.io:443 -> invalid JWT token
+```
+
+The key must first be exchanged for a JWT:
+
+```bash
+curl -s -X POST https://auth.thegraph.market/v1/auth/issue \
+  -H 'Content-Type: application/json' \
+  -d "{\"api_key\":\"$SUBSTREAMS_API_KEY\"}" | jq -r .token
+```
+
+⇒ `.env` now separates **`SUBSTREAMS_API_KEY`** (the durable `server_` key) from
+**`SUBSTREAMS_API_TOKEN`** (the short-lived JWT the CLI consumes). `scripts/substreams-auth.sh`
+does the exchange.
+
+The same key exchanges successfully at `auth.streamingfast.io` but is **rejected by
+`auth.pinax.network`** (`api_key_not_found`), which identifies it as a **Graph Market**
+key — the provider the prize rules require. Issued JWT is plan tier `FREE`.
+
+`[DOC]` Base endpoints: `base-mainnet.streamingfast.io:443` (used) and
+`base.substreams.pinax.network:443`.
+
+### 7.2 GROUND TRUTH #1 CONFIRMED EMPIRICALLY — this is the project's whole case
+
+| | count | share |
+|---|---|---|
+| **`payer` != `tx.from`** | **12,291** | **99.6 %** |
+| `payer` == `tx.from` | 51 | 0.4 % |
+| `payer` empty | **0** | 0 % |
+
+In every inspected row `facilitator == tx.from` **exactly**, while `payer` is an unrelated
+address. Example (block 51,221,476):
+
+```
+tx          0x0a8fe939c7a59b0be8a517d421ff68536bcbffadc06b4611aa524bea92ca6bfd
+tx.from     0xb87e1a2cc2b4643f2892768e80e41167f17c5860   <- facilitator, NOT the spender
+facilitator 0xb87e1a2cc2b4643f2892768e80e41167f17c5860   <- identical to tx.from
+payer       0x8000dce4a82e68053326c1f2853d00081084efeb   <- the real spender
+recipient   0x9fb365e4e9385e2a39febad70368267e6f571d9a
+amount      50000  (0.05 USDC)
+```
+
+⇒ Attributing spend by `tx.from` would misattribute **99.6 % of all x402 payments on Base**
+to whichever facilitator relayed them. This is not an edge case; it is the overwhelming
+default, and it is the reason this project exists. Quote this number in the README and the
+video.
+
+### 7.3 `[DOC]` `payer` is never empty — the trace decode works on Base
+
+0 of 12,351 payments had an empty `payer`. This confirms the §5.6 prediction: Base's EXTENDED
+detail level makes `transferWithAuthorization` calldata available, so the decode that makes
+`payer` trustworthy is reliable here. `call` metadata is present on the log objects.
+
+### 7.4 `[DOC]` Ground truth #3 verified on-chain — USDC on Base
+
+`0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` accounts for **12,341 / 12,351** payments and
+appears as `tx.to`. Upgraded from `[PROMPT]` to observed. One other asset appeared once:
+`0x3fda9cc61b1fef8b2ffd715f0a9eef7182e48f37`.
+
+⇒ Two distinct assets in a single 5.5-hour window, which is exactly why hardcoding
+`USDC = 6` decimals (§5.3) is the wrong call.
+
+### 7.5 `[DOC]` 418 distinct facilitators — R4 has real signal
+
+418 distinct facilitator addresses in ~5.5 hours, with a long tail: the top five each relayed
+~521 payments, and the distribution falls away sharply. A computed allowlist is clearly
+necessary, and R4 (unknown facilitator) will fire on real data rather than only on planted
+data.
+
+### 7.6 ⚠️ Every payment is `confidence: "heuristic"`
+
+All 12,351 rows carry `confidence: "heuristic"`, `transferMethod: TRANSFER_METHOD_EIP3009`,
+`settlementSource: SETTLEMENT_SOURCE_AUTHORIZATION_USED`.
+
+`confidence` is a **string**, not a number. And nothing observed is "exact" — the EIP-3009
+reconstruction is a join of `AuthorizationUsed` + `Transfer` + calldata, and Pinax labels the
+result heuristic.
+
+⇒ Be precise in the write-up: we report *reconstructed* payments, not settled-and-proven
+ones. Carry `confidence` through to the `payments` table and surface it in G6 rather than
+silently dropping it — claiming certainty the upstream module does not is the kind of thing
+a judge will catch.
+
+### 7.7 `[RESOLVED]` §4.7 — `payment_id` uniqueness settled with live data
+
+Both candidate keys are unique across all 12,351 payments — zero collisions:
+
+| Candidate | Unique? | Distinct |
+|---|---|---|
+| `(block, log.blockIndex)` | **YES** | 12,351 |
+| `(tx_hash, log.ordinal)` | **YES** | 12,351 |
+
+`log.blockIndex` is the receipt-level log index within the block — the field the brief calls
+`log_index`. `ordinal` is a Firehose execution-order counter, unique but **not** the index a
+block explorer shows.
+
+⇒ **Freeze `payment_id = tx_hash:blockIndex` at G1.** Both are unique, but `blockIndex`
+is the value a reader can verify against an explorer, and G6 requires every answer to cite
+transaction hashes that a judge can actually check. Do not use `ordinal` for the public id.
+
+### 7.8 Independent replication
+
+`scripts/g0b-liveness.sh` re-ran the measurement over a different, later window and
+reproduced the headline figure exactly:
+
+| Run | Blocks | Payments | `payer != tx.from` | payment_id collisions |
+|---|---|---|---|---|
+| Initial (10k window) | 6,180+ | 12,351 | 12,291 (**99.6 %**) | 0 |
+| Verify script (2k window) | 1,229 | 2,247 | 2,237 (**99.6 %**) | 0 |
+
+The 10k run completed cleanly: exit 0, 10,145 blocks processed, 22 GiB scanned, 9.6 MiB
+egress. The 99.6 % figure is stable across windows, so it is safe to quote.

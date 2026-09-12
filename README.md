@@ -6,6 +6,19 @@ blocks the next payment **at signing time**.
 
 Built for ETHOnline 2026.
 
+## The number that justifies this project
+
+Streaming every x402 payment on Base over a 10,145-block window:
+
+| | count | share |
+|---|---|---|
+| **`payer` != `tx.from`** | **12,291** | **99.6 %** |
+| `payer` == `tx.from` | 51 | 0.4 % |
+
+Attributing agent spend by `tx.from` misattributes **99.6% of x402 payments** to whichever
+facilitator relayed them. Measured, not assumed — reproduce it with
+`./scripts/g0b-liveness.sh`.
+
 ## The core idea
 
 In x402, the agent **signs** an EIP-3009 authorization and a **facilitator** broadcasts it.
@@ -56,12 +69,23 @@ Both G0 kill tests are verified as far as they can be without credentials:
   again → **`400 policy_violation`**; sign to a different vendor on the same wallet →
   `200`. Enforcement is server-side at signing time, so the agent never obtains a signature
   to hand to a facilitator — and the pre-sign-gate fallback is **not** needed.
-- **G0b** — `substreams` v1.16.6 installed, the genuine `x402-v0.1.0.spkg` fetched and
-  inspected: `map_events -> proto:evm.x402.v1.Events`, and all 13 `Payment` fields confirmed
-  from the package's own descriptor.
+- **G0b — PASSED.** ✅ Streamed **12,351 live x402 payments** over 10,145 Base blocks from a
+  Graph Market Substreams endpoint. `payer` differed from `tx.from` on **99.6%** of them,
+  and was never empty.
 
-G0b needs the Graph Market endpoint + token. See `PROGRESS.md` for the gate ledger and
-`NOTES.md` for every confirmed API shape with its evidence grade.
+See `PROGRESS.md` for the gate ledger and `NOTES.md` for every confirmed API shape with its
+evidence grade.
+
+### Reproducing G0b
+
+```bash
+./scripts/bootstrap.sh     # substreams CLI + packages
+cp .env.example .env       # set SUBSTREAMS_API_KEY (a 'server_...' Graph Market key)
+./scripts/g0b-liveness.sh  # streams live Base data, prints the attribution split
+```
+
+The `server_` key is **not** the token the CLI consumes — the endpoints reject it. It must be
+exchanged for a JWT, which `scripts/substreams-auth.sh` does automatically.
 
 ### Reproducing G0a
 

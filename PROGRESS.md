@@ -5,7 +5,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | Gate | Status | Verify command | Result |
 |---|---|---|---|
 | G0a Privy signature gating | **done** ✅ | `node --env-file=.env scripts/g0a-signature-gate.mjs` | **PASS.** Sign → 200; append DENY on `message.to`; identical payload → **400 `policy_violation`**; different vendor, same wallet → 200. Deterministic over 3 runs. Fallback NOT needed |
-| G0b Substreams liveness | **blocked (credentials)** | `substreams info x402.spkg` (done) / `substreams run ... -e $SUBSTREAMS_ENDPOINT -s -10000` | CLI v1.16.6 installed, real spkg pulled + inspected, `map_events` and all 13 Payment fields confirmed. Needs Graph Market endpoint + token |
+| G0b Substreams liveness | **done** ✅ | `./scripts/g0b-liveness.sh` | **PASS.** 12,351 live payments over 10,145 Base blocks via a Graph Market endpoint. `payer != tx.from` on **99.6 %** of them; `payer` never empty; 0 `payment_id` collisions |
 | G1 Ledger | not started | `psql -c 'select count(*), sum(amount_usd) from payments'` | — |
 | G2 Fleet | not started | — | — |
 | G3 Brains | not started | — | — |
@@ -132,3 +132,46 @@ Findings recorded in NOTES.md §6:
   a rollback path for a mistaken enforcement.
 
 Next: G0b, which needs the Graph Market endpoint + token.
+
+### 2026-09-12 — G0b PASSED, and it validates the project's core claim
+
+Streamed `x402-v0.1.0.spkg map_events` from `base-mainnet.streamingfast.io:443` using a
+Graph Market key. 10,145 blocks processed, exit 0.
+
+```
+payments         : 12,351
+payer != tx.from : 12,291  (99.6 %)
+payer == tx.from :     51  ( 0.4 %)
+payer empty      :      0
+```
+
+**Ground truth #1 is now an empirical finding, not an assumption.** In every inspected row
+`facilitator == tx.from` exactly while `payer` is an unrelated address, so attributing spend
+by `tx.from` would misattribute **99.6 % of all x402 payments on Base** to whichever
+facilitator relayed them. Reproduced at 99.6 % on a second independent window via
+`scripts/g0b-liveness.sh`. This number belongs in the README and the video.
+
+Other findings (NOTES.md §7):
+
+- **`[CORRECTION]` the API key is not the API token.** A `server_` key is rejected by the
+  endpoints outright; it must be exchanged for a JWT at `auth.thegraph.market/v1/auth/issue`.
+  `.env` now separates `SUBSTREAMS_API_KEY` (durable) from `SUBSTREAMS_API_TOKEN` (the JWT),
+  and `scripts/substreams-auth.sh` does the exchange. The key is rejected by
+  `auth.pinax.network`, which confirms it is a Graph Market key — the provider the prize
+  rules require.
+- **`payer` is never empty** (0 / 12,351), confirming the §5.6 prediction that Base's
+  EXTENDED detail level makes the trace-dependent decode reliable.
+- **USDC on Base verified on-chain** (12,341 / 12,351 payments) — ground truth #3 upgraded
+  from `[PROMPT]` to observed. A second asset also appeared, which is exactly why hardcoding
+  decimals is the wrong call.
+- **418 distinct facilitators** in ~5.5 hours, so R4 will fire on real data, not just planted
+  data.
+- **⚠️ every payment is `confidence: "heuristic"`** — a string, and nothing is "exact". We
+  reconstruct payments rather than prove settlement, so `confidence` must be carried into the
+  `payments` table and surfaced at G6 rather than quietly dropped.
+- **§4.7 resolved:** both `(block, blockIndex)` and `(tx_hash, ordinal)` are collision-free
+  over 12,351 rows. Freeze `payment_id = tx_hash:blockIndex` at G1 — `blockIndex` is the
+  receipt log index a judge can verify on an explorer; `ordinal` is a Firehose counter that
+  cannot be.
+
+Both G0 kill tests are now passed. Next: G1.
