@@ -1,0 +1,19 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# deps / builds
+node_modules/
+target/
+dist/
+build/
+__pycache__/
+*.spkg
+
+# local
+.DS_Store
+*.log
+.tmp/
