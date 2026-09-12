@@ -689,8 +689,12 @@ URI, not the direct one, on any IPv4-only network.
 ### 8.3 Passwords in connection URIs must be percent-encoded
 
 A password containing `@` (or `:` `/` `?` `#`) breaks URI parsing — the `@` is read as the
-host separator. `Khushal@1855` must be written `Khushal%401855`. Generated automatically in
-`.env`; worth remembering when pasting a URI from any dashboard.
+host separator, so `pa55w@rd` must be written `pa55w%40rd`. Encoding is applied automatically
+when `.env` is written; worth remembering when pasting a URI from any dashboard.
+
+> Never write a real credential into this file, even as an illustration. Use a placeholder.
+> (This paragraph originally contained a live password; it was purged from history and the
+> credential must be treated as compromised and rotated.)
 
 ### 8.4 Local Postgres needs an explicit start, and TCP is localhost-only
 
