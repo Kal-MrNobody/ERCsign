@@ -943,3 +943,77 @@ Live result on the busiest vendor in the ledger:
 ⇒ The backtest correctly advises **against** enforcing: the rule stops nothing of ours, and
 the vendor has 302 independent payers. This is the differentiator doing its job — the
 interesting output is the rule a human should *not* approve.
+
+---
+
+## 12. G5 RESULT — PASS. Enforcement at signing time, gated by a real 2-of-2 quorum.
+
+### 12.1 `[DOC]` Privy authorization-signature spec
+
+Assembled from `docs.privy.io/controls/authorization-keys/using-owners/sign` and its
+direct-implementation page:
+
+| Step | Spec |
+|---|---|
+| Canonical payload | `{version:1, method, url, body, headers}` where `headers` carries `privy-app-id` (+ optional `privy-idempotency-key`, `privy-request-expiry`) |
+| Serialization | **RFC 8785 (JCS)** — recursive lexicographic key sort, no insignificant whitespace |
+| Hash | SHA-256 |
+| Curve | **ECDSA P-256 (secp256r1)** |
+| Signature | ASN.1 / **DER** |
+| Encoding | standard base64 (not URL-safe) |
+| Header | `privy-authorization-signature`, **comma-separated** for multi-sig |
+| Private key | base64 PKCS#8, strip any `wallet-auth:` prefix |
+
+Node emits DER for EC signatures by default, so `createSign('SHA256').sign(key)` is already
+the right shape. Implemented in `lib/quorum.mjs` and accepted by the live API on first try.
+
+⚠️ Canonicalization is the sharp edge: a key-ordering mistake signs different bytes and
+fails as an opaque 401 that looks like a credential problem.
+
+### 12.2 The 2-of-2 quorum is enforced by Privy, not by our UI
+
+A policy created with `owner_id` set to a key quorum id refuses changes below threshold:
+
+```
+[unsigned]  -> 401  Missing `privy-authorization-signature` header
+[1-of-2]    -> 401  Number of signatures does not match the authorization threshold
+[2-of-2]    -> ACCEPTED  rule_id=b2hvciv22htjty276g8yh2i0
+```
+
+⇒ This matters for the claim. "A human quorum approves" would otherwise be a statement about
+our console's behaviour; here the *server* rejects an under-signed change, so bypassing our
+UI does not bypass the control.
+
+`POST /v1/key_quorums` takes `public_keys` (base64 DER SPKI), `authorization_threshold`, and
+optionally `user_ids` / `key_quorum_ids` (nestable one level).
+
+### 12.3 The enforcement loop — PASS, rehearsed 3×
+
+```
+[before] agent-01 signing to <vendor>              -> SIGNED
+         appended to 12 policies, no pre-existing rule lost
+[after ] agent-01 signing the IDENTICAL payload    -> REFUSED (policy_violation)
+[ctrl  ] agent-01 signing to a DIFFERENT vendor    -> SIGNED
+```
+
+Repeated three times with a fresh vendor each time — all pass, boring as required.
+
+The control line is load-bearing for the same reason as G0a's step 6: without it, a DENY
+that blocked *all* typed-data signing would produce an identical before/after transcript.
+
+The script also asserts the refusal code is `policy_violation`. A refusal for any other
+reason (malformed payload, expired auth) proves nothing about enforcement, and treating it
+as success would be the easiest way to fake this gate.
+
+### 12.4 `[CORRECTION]` The "version guard" is an append + invariant check
+
+The brief asks for read-modify-write with a version guard. Privy has no version or ETag
+(§1.5), so instead:
+
+- append via `POST /v1/policies/{id}/rules`, which adds ONE rule and cannot clobber a
+  concurrent edit the way `PATCH`ing the whole array can;
+- then verify the invariant: the policy must gain exactly one rule and **lose none**. If a
+  pre-existing rule vanished, something modified the policy concurrently and the script
+  aborts before touching further policies.
+
+That is the honest equivalent of the guard the brief specified, given the API that exists.

@@ -10,7 +10,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | G2 Fleet | **built, blocked on funding** | `npm run balances` | 12 Privy agent wallets + facilitator created; EIP-712 domain verified against live USDC (DOMAIN_SEPARATOR matches); payment path complete. Needs USDC + ETH sent to the facilitator |
 | G3 Brains | **built, R1 blocked on key** | `node --env-file=.env scripts/g3-risk.mjs` | Enricher + R1/R2/R4 + findings carrying real Privy rule JSON. R1 needs `GRAPH_API_KEY` (Subgraph Studio — the Graph Market key is rejected). R4 validated on live data |
 | G4 Backtest | **done** ✅ | `curl -X POST localhost:8787/v1/findings/{id}/backtest` | **PASS.** Returns `would_block {count,usd,tx[]}` + `false_positives {count,vendors[]}`. Correctly advises against enforcing a vendor with 302 independent payers |
-| G5 Enforcement loop | not started | — | — |
+| G5 Enforcement loop | **done** ✅ | `node --env-file=.env scripts/g5-enforce.mjs <finding_id>` | **PASS ×4.** Agent signs → rule appended to 12 policies → identical payload **REFUSED (policy_violation)** → different vendor still signs. Plus a real **2-of-2 key quorum**: Privy refuses unsigned and 1-of-2 changes |
 | G6 Surfaces | **done** ✅ | `node /tmp/mcp-test.mjs` / open `localhost:8787` | **PASS.** 5 MCP tools verified over stdio JSON-RPC on the 908-row ledger; single-page console renders spend table, finding detail, policy diff, approve — no chart library, no theming |
 | G7 Ship | not started | — | — |
 
@@ -342,3 +342,35 @@ Two approval guards, both verified firing rather than assumed:
 Rendering the page also caught a real accuracy bug: the attribution line rounded 905/908 up
 to "100%". It now reads 99.7% and never rounds up. Overstating our own headline number is the
 fastest way to lose a reviewer.
+
+### 2026-09-13 — G5 PASSED, both halves
+
+**Enforcement loop**, rehearsed three times with a fresh vendor each time:
+
+```
+[before] agent-01 signing to <vendor>           -> SIGNED
+         appended to 12 policies, no rule lost
+[after ] agent-01 signing the IDENTICAL payload -> REFUSED (policy_violation)
+[ctrl  ] agent-01 signing to a DIFFERENT vendor -> SIGNED
+```
+
+The agent is refused **by Privy**, not by our code — which is the entire point. A gate in our
+own client is something an agent routes around by not calling it.
+
+**Human quorum**, and it is enforced server-side rather than by our console:
+
+```
+[unsigned] -> 401 Missing `privy-authorization-signature` header
+[1-of-2]   -> 401 Number of signatures does not match the authorization threshold
+[2-of-2]   -> ACCEPTED
+```
+
+Implementing this needed the full signing spec, which is not in the API reference: RFC 8785
+canonical JSON → SHA-256 → ECDSA P-256 → DER → base64, comma-separated for multi-sig. It was
+accepted by the live API on the first attempt. Canonicalization is the sharp edge — a
+key-ordering mistake signs different bytes and fails as an opaque 401 that reads like a
+credential problem.
+
+**The brief's "version guard" does not exist**, so it is implemented as append + invariant
+check: `POST .../rules` adds exactly one rule and cannot clobber a concurrent edit, and the
+script then verifies the policy gained one rule and lost none, aborting if anything vanished.

@@ -28,3 +28,5 @@ fleet.json
 planted-vendor.json
 g2-payments.json
 node_modules/
+quorum-keys.json
+quorum.json
