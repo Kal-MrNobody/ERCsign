@@ -1069,3 +1069,43 @@ zero block count. Now refuses with `supported: false` and an explicit reason.
 `g1-verify.sh` PASS (908 rows, 99.7 %) · `cargo test` 4/4 · MCP handshake + 5 tools ·
 console renders with no JS errors · approve-after-mutation correctly 409s · empty-fleet
 backtest correctly refuses.
+
+---
+
+## 14. G3 with the live registry — R1 fires, and the result recalibrates the rule
+
+`GRAPH_API_KEY` works (it needed a few minutes to propagate after creation — the first
+attempt returned `auth error: API key not found` for a key that was in fact valid). Enriched
+all 230 vendors against the Agent0 / ERC-8004 subgraph on Base.
+
+```
+230 vendors checked -> 2 registered, 228 NOT in the registry
+R1 findings: 228, total exposure $5,000.57
+```
+
+The two registered vendors:
+
+| address | name | x402Support | feedback |
+|---|---|---|---|
+| `0x93862e5b…5ca25` | Clash of Coins | true | 10 |
+| `0x75a6f372…3e79e` | ChainInsight AI | false | 0 |
+
+### 14.1 ⚠️ R1 alone is low-signal, and the write-up must say so
+
+**99.1 % of vendors receiving x402 payments on Base are absent from ERC-8004.** Being
+unregistered is the *norm*, not an anomaly — so "unregistered vendor" fires on almost
+everything and, used alone, is close to useless as a risk signal. Reporting 228 high-severity
+findings as if each were actionable would be exactly the alarm-fatigue failure that makes
+security tooling get ignored.
+
+⇒ Two consequences, both honest rather than cosmetic:
+1. R1 is only meaningful **ranked by exposure** and **combined** with R2 (concentration) —
+   an unregistered vendor we barely pay is uninteresting; an unregistered vendor that is
+   fresh and takes most of our spend is the actual signal.
+2. The backtest is what rescues it. A rule against a widely-used unregistered vendor returns
+   a false-positive flag, so the tool still argues against enforcing most of these.
+
+This is a real finding about the ecosystem and belongs in the submission as such: ERC-8004
+adoption among live x402 payees is ~1 %, which is itself worth reporting, and it is why the
+project leans on *behavioural* signals (concentration, facilitator novelty) rather than
+registry membership alone.

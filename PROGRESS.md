@@ -8,7 +8,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | G0b Substreams liveness | **done** ✅ | `./scripts/g0b-liveness.sh` | **PASS.** 12,351 live payments over 10,145 Base blocks via a Graph Market endpoint. `payer != tx.from` on **99.6 %** of them; `payer` never empty; 0 `payment_id` collisions |
 | G1 Ledger | **done** ✅ | `./scripts/g1-verify.sh` | **PASS.** 908 live Base payments, sum(amount_usd)=5065.56; `payer != facilitator` on 905 (99.7%); 0 payment_id collisions; 183 vendors. Schema FROZEN |
 | G2 Fleet | **built, blocked on funding** | `npm run balances` | 12 Privy agent wallets + facilitator created; EIP-712 domain verified against live USDC (DOMAIN_SEPARATOR matches); payment path complete. Needs USDC + ETH sent to the facilitator |
-| G3 Brains | **built, R1 blocked on key** | `node --env-file=.env scripts/g3-risk.mjs` | Enricher + R1/R2/R4 + findings carrying real Privy rule JSON. R1 needs `GRAPH_API_KEY` (Subgraph Studio — the Graph Market key is rejected). R4 validated on live data |
+| G3 Brains | **done** ✅ | `node --env-file=.env scripts/g3-enrich.mjs && node --env-file=.env scripts/g3-risk.mjs` | **PASS.** 230 vendors enriched against the live ERC-8004 subgraph: 2 registered, 228 not. 228 R1 findings, $5,000.57 exposure, each carrying enforceable Privy rule JSON |
 | G4 Backtest | **done** ✅ | `curl -X POST localhost:8787/v1/findings/{id}/backtest` | **PASS.** Returns `would_block {count,usd,tx[]}` + `false_positives {count,vendors[]}`. Correctly advises against enforcing a vendor with 302 independent payers |
 | G5 Enforcement loop | **done** ✅ | `node --env-file=.env scripts/g5-enforce.mjs <finding_id>` | **PASS ×4.** Agent signs → rule appended to 12 policies → identical payload **REFUSED (policy_violation)** → different vendor still signs. Plus a real **2-of-2 key quorum**: Privy refuses unsigned and 1-of-2 changes |
 | G6 Surfaces | **done** ✅ | `node /tmp/mcp-test.mjs` / open `localhost:8787` | **PASS.** 5 MCP tools verified over stdio JSON-RPC on the 908-row ledger; single-page console renders spend table, finding detail, policy diff, approve — no chart library, no theming |
@@ -374,3 +374,31 @@ credential problem.
 **The brief's "version guard" does not exist**, so it is implemented as append + invariant
 check: `POST .../rules` adds exactly one rule and cannot clobber a concurrent edit, and the
 script then verifies the policy gained one rule and lost none, aborting if anything vanished.
+
+### 2026-09-13 — G3 PASSED with live registry data
+
+`GRAPH_API_KEY` worked on retry — a freshly created Subgraph Studio key needs a few minutes
+to propagate, and returns `auth error: API key not found` in the meantime even though it is
+valid. Worth knowing: that error does not mean the key is wrong.
+
+Enriched all 230 vendors against the Agent0 / ERC-8004 subgraph on Base:
+
+```
+2 registered, 228 NOT in the registry
+R1: 228 findings, $5,000.57 exposure
+```
+
+**The result recalibrates the rule, and the write-up says so.** 99.1 % of vendors receiving
+x402 payments on Base are absent from ERC-8004, so "unregistered" is the norm rather than an
+anomaly. Presenting 228 high-severity findings as individually actionable would be precisely
+the alarm-fatigue failure that gets security tooling ignored. R1 is meaningful only ranked by
+exposure and combined with R2; the backtest is what keeps it honest, since it flags a
+widely-used vendor as a likely false positive regardless of registry status.
+
+That ~1 % ERC-8004 adoption among live x402 payees is itself a finding worth reporting, and it
+is the reason the project leans on behavioural signals over registry membership.
+
+Funding note: the USDC and ETH were sent to the correct facilitator address but on **Ethereum
+mainnet**, not Base (verified: both transactions succeed on Ethereum, neither exists on Base).
+The funds are safe — Privy controls the same address on every EVM chain — but G2 needs them on
+Base.
