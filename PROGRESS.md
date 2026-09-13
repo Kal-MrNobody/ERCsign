@@ -11,7 +11,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | G3 Brains | **built, R1 blocked on key** | `node --env-file=.env scripts/g3-risk.mjs` | Enricher + R1/R2/R4 + findings carrying real Privy rule JSON. R1 needs `GRAPH_API_KEY` (Subgraph Studio — the Graph Market key is rejected). R4 validated on live data |
 | G4 Backtest | **done** ✅ | `curl -X POST localhost:8787/v1/findings/{id}/backtest` | **PASS.** Returns `would_block {count,usd,tx[]}` + `false_positives {count,vendors[]}`. Correctly advises against enforcing a vendor with 302 independent payers |
 | G5 Enforcement loop | not started | — | — |
-| G6 Surfaces | not started | — | — |
+| G6 Surfaces | **done** ✅ | `node /tmp/mcp-test.mjs` / open `localhost:8787` | **PASS.** 5 MCP tools verified over stdio JSON-RPC on the 908-row ledger; single-page console renders spend table, finding detail, policy diff, approve — no chart library, no theming |
 | G7 Ship | not started | — | — |
 
 ## Gate log
@@ -310,3 +310,35 @@ The rule would stop nothing of ours and targets a vendor 302 independent payers 
 backtest advises **against** enforcing it. Corrected a real semantic bug found while testing:
 the first version reported the vendor's *payers* as false positives, which a rule on our own
 wallets cannot block. `blast_radius` now carries that context separately and labelled.
+
+### 2026-09-13 — G6 PASSED
+
+**MCP server** — `spend_summary`, `vendor_risk`, `list_findings`, `backtest_rule`,
+`propose_enforcement`, verified end to end over stdio JSON-RPC. Asking it the brief's own
+test question returns real, citable data:
+
+```
+908 payments | $5,065.56 | 467 payers | 230 vendors | 57 facilitators
+905 of 908 have payer != tx.from
+```
+
+Every tool cites transaction hashes. A report that says "you spent $X with a risky vendor"
+is worthless if a human cannot go and check it.
+
+**Works against any fleet** — fleet membership is a parameter, never a hardcoded list.
+Omitting `payers` falls back to the demo fleet; passing a list scopes to those wallets;
+passing `[]` means all indexed payers chain-wide. Those last two were collapsed in the first
+version, which made "show me everything" silently return the demo fleet's numbers — fixed.
+
+**Console** — single page, no chart library, no theming. Spend table, finding detail, policy
+diff, approve. The diff shows the exact JSON appended to the policy, so what a human approves
+is what gets enforced.
+
+Two approval guards, both verified firing rather than assumed:
+- **409** — cannot approve a finding that has not been backtested. Approving a rule nobody
+  has replayed is exactly the mistake this tool exists to prevent.
+- **400** — an advisory (R4) finding is refused outright, with the reason.
+
+Rendering the page also caught a real accuracy bug: the attribution line rounded 905/908 up
+to "100%". It now reads 99.7% and never rounds up. Overstating our own headline number is the
+fastest way to lose a reviewer.
