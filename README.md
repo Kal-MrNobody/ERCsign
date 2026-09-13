@@ -177,12 +177,12 @@ that vendor. The interesting output is the rule a human should **not** approve.
 | G0a Privy signature gating | **done** — refusal on an in-message field, 3/3 runs |
 | G0b Substreams liveness | **done** — 12,351 live payments, 99.6 % attribution gap |
 | G1 Ledger | **done** — 908 rows sunk, schema frozen |
-| G2 Fleet | **built, unfunded** — 12 wallets + facilitator created; EIP-712 domain verified against live USDC |
+| G2 Fleet | **done** — 8 real x402 payments settled on Base, 8/8 with `payer != tx.from`; 4 more refused live by our own G5 rule |
 | G3 Brains | **built** — R1 needs a Subgraph Studio key |
 | G4 Backtest | **done** |
 | G5 Enforcement loop | **done** — 4 passes incl. 3 rehearsals, plus a live 2-of-2 quorum |
 | G6 Surfaces | **done** — 5 MCP tools + review console |
-| G7 Ship | in progress |
+| G7 Ship | **done** — Bazantic gateway + published Recipe; A/B shows the Recipe adds 13 verifiable tx-hash citations (vs 0) and 4 honesty guardrails ([`bazantic/ab-test.md`](bazantic/ab-test.md)) |
 
 `PROGRESS.md` is the gate ledger. `NOTES.md` records every confirmed API shape with an
 evidence grade, and every place a vendor's docs contradicted our assumptions.

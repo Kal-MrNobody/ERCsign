@@ -12,7 +12,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | G4 Backtest | **done** ✅ | `curl -X POST localhost:8787/v1/findings/{id}/backtest` | **PASS.** Returns `would_block {count,usd,tx[]}` + `false_positives {count,vendors[]}`. Correctly advises against enforcing a vendor with 302 independent payers |
 | G5 Enforcement loop | **done** ✅ | `node --env-file=.env scripts/g5-enforce.mjs <finding_id>` | **PASS ×4.** Agent signs → rule appended to 12 policies → identical payload **REFUSED (policy_violation)** → different vendor still signs. Plus a real **2-of-2 key quorum**: Privy refuses unsigned and 1-of-2 changes |
 | G6 Surfaces | **done** ✅ | `node /tmp/mcp-test.mjs` / open `localhost:8787` | **PASS.** 5 MCP tools verified over stdio JSON-RPC on the 908-row ledger; single-page console renders spend table, finding detail, policy diff, approve — no chart library, no theming |
-| G7 Ship | not started | — | — |
+| G7 Ship | **done** ✅ | `RFT_API_BASE=http://localhost:8791 node bazantic/ab/run-ab.mjs` | **PASS.** Bazantic gateway serving 402s + published Recipe `agent-spend-audit`; controlled A/B (same model, same OpenAPI-generated tools, same live ledger, Recipe the only variable) shows the Recipe adds **13 verifiable tx-hash citations vs 0** and 4 honesty guardrails (nothing-enforced, quorum gate, unpriced≠0, heuristic confidence) the raw spec never produces. Both arms isolated from repo CLAUDE.md |
 
 ## Gate log
 
@@ -422,3 +422,23 @@ money reaching that vendor — at signing time, so there was nothing to broadcas
 reverse. That is the entire project working end to end on live funds, unprompted.
 
 All nine gates now pass.
+
+### 2026-09-13 — G7 shipped (Bazantic A/B, run locally)
+- Built `bazantic/ab/openapi-mcp-shim.mjs`: generates one MCP tool per operation from
+  `api/openapi.json` verbatim — the same transform a Bazantic gateway performs — so both A/B
+  arms see byte-identical tools over the same live Postgres ledger.
+- Built `bazantic/ab/run-ab.mjs`: same model (`claude-opus-5`), same task, run twice; Recipe
+  is the only variable (arm B gets the Recipe `description` as appended system prompt + the
+  filled `prompt_template`; arm A gets the bare question).
+- Isolation: children run in a temp dir OUTSIDE the repo (else `CLAUDE.md` discovery leaks the
+  working agreement — an early run was contaminated this way and was discarded) and with all
+  built-in tools denied (verified: both arms' Bash/Read attempts were refused).
+- Result recorded in `bazantic/ab-test.md`. Both arms reached the correct "block nothing"
+  headline because the OpenAPI descriptions already carry attribution/backtest/unchecked
+  facts; the Recipe's measured value is citation discipline (**13 tx hashes vs 0**) and four
+  honesty guardrails the spec cannot enforce.
+- Note: arm B hit a 429 session limit on its first attempt and was re-run via `AB_ONLY=B`
+  (results merged, arm A's good run preserved).
+- Bazantic eligibility: account **Kal-MrNobody**, gateway `ulbnrohdjrg6dlid3hgvv6ptzm` active
+  and serving 402s, Recipe `agent-spend-audit` published & bound. Honest caveat: the gateway's
+  upstream is a placeholder because this container is 443-egress-only (no public host).
