@@ -862,3 +862,84 @@ vendoring a copy of its logic, which is the leverage claim the Composable track 
 
 `papertrail/postgres/schema.sql` is the G1 freeze point. G3–G6 read these columns; changing
 them from here is a migration, not an edit.
+
+---
+
+## 11. G3 / G4 — enrichment, risk rules, and backtest
+
+### 11.1 `[DOC]` Agent0 / ERC-8004 on Base
+
+Subgraph id **`43s9hQRurMGjuYnC1r2ZwS6xSQktbFyXMPMqGKUFJojb`**, queried at
+`https://gateway.thegraph.com/api/<API_KEY>/subgraphs/id/<SUBGRAPH_ID>`.
+
+Entities confirmed from the published `schema.graphql` (agent0lab/subgraph):
+`Agent` (`agentWallet`, `owner`, `totalFeedback`, `lastActivity`, `createdAt`),
+`AgentRegistrationFile` (`name`, `ens`, `x402Support`, `active`, `mcpEndpoint`),
+`Feedback` (`value`, `isRevoked`), `Validation` (`response`, `status`).
+
+⚠️ **`[CORRECTION]` The Graph MARKET key does not work here.** The `server_…` key used for
+Substreams is rejected by the subgraph gateway:
+
+```
+{"errors":[{"message":"auth error: malformed API key"}]}
+```
+
+⇒ The registry needs a **separate Subgraph Studio key** (`GRAPH_API_KEY`). Two different
+Graph products, two different credentials. The enricher fails with this explanation rather
+than a bare 401.
+
+### 11.2 R1 refuses to report safety it has not verified
+
+If `vendor_registry` is empty, R1 **skips loudly** rather than returning "no unregistered
+vendors". A risk tool that reports all-clear because it could not check is worse than one
+that refuses — the operator would read a green result and act on it.
+
+### 11.3 `[CORRECTION]` R4 cannot be enforced at signing time, and says so
+
+The facilitator is **not a field of the EIP-3009 message** — the signed struct is
+`from, to, value, validAfter, validBefore, nonce`. There is nothing for an
+`ethereum_typed_data_message` condition to key on, so no Privy rule can block a payment
+based on who will relay it.
+
+⇒ R4 findings carry `proposed_rule: {_advisory: true, …}` explaining this, and the backtest
+returns `supported: false` with the reason. Claiming R4 enforcement would promise something
+the mechanism cannot deliver. Real enforcement would have to constrain which facilitator the
+agent submits to, inside our own x402 client — a pre-sign gate, which is exactly the
+fallback G0a proved unnecessary for *recipient* rules.
+
+R4's detection logic is validated against live data: 57 distinct facilitators split into 27
+above the activity floor and a 30-strong long tail, so the computed allowlist separates real
+traffic rather than firing arbitrarily.
+
+### 11.4 The backtest reads the rule that gets enforced
+
+`ruleToPredicate` parses the **same JSON** that is POSTed to Privy, rather than taking a
+separate "what this rule means" argument. If the two could disagree, the backtest would be
+validating something other than what ships.
+
+### 11.5 `[CORRECTION]` What "false positive" honestly means here
+
+First implementation returned the *payers* of the targeted vendor under
+`false_positives.vendors` — wrong on both the name and the meaning, since a rule attached to
+our wallets cannot block anyone else's payments at all.
+
+Corrected definition:
+
+- **`would_block`** — our fleet's payments the rule would stop.
+- **`false_positives`** — targeted vendors that look **legitimate**, judged by having ≥ N
+  independent payers outside our fleet. A vendor the wider network pays is probably not a
+  scam, so blocking it is probably a mistake.
+- **`blast_radius`** — third-party activity, reported separately and labelled as context, so
+  it can never be mistaken for payments our rule could actually stop.
+
+Live result on the busiest vendor in the ledger:
+
+```json
+"would_block":     { "count": 0, "usd": "0", "tx": [] },
+"false_positives": { "count": 1, "vendors": ["0xcc1984…930e"],
+                     "detail": [{ "independent_payers": 302 }] }
+```
+
+⇒ The backtest correctly advises **against** enforcing: the rule stops nothing of ours, and
+the vendor has 302 independent payers. This is the differentiator doing its job — the
+interesting output is the rule a human should *not* approve.

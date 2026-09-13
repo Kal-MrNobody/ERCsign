@@ -7,9 +7,9 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | G0a Privy signature gating | **done** ✅ | `node --env-file=.env scripts/g0a-signature-gate.mjs` | **PASS.** Sign → 200; append DENY on `message.to`; identical payload → **400 `policy_violation`**; different vendor, same wallet → 200. Deterministic over 3 runs. Fallback NOT needed |
 | G0b Substreams liveness | **done** ✅ | `./scripts/g0b-liveness.sh` | **PASS.** 12,351 live payments over 10,145 Base blocks via a Graph Market endpoint. `payer != tx.from` on **99.6 %** of them; `payer` never empty; 0 `payment_id` collisions |
 | G1 Ledger | **done** ✅ | `./scripts/g1-verify.sh` | **PASS.** 908 live Base payments, sum(amount_usd)=5065.56; `payer != facilitator` on 905 (99.7%); 0 payment_id collisions; 183 vendors. Schema FROZEN |
-| G2 Fleet | not started | — | — |
-| G3 Brains | not started | — | — |
-| G4 Backtest | not started | — | — |
+| G2 Fleet | **built, blocked on funding** | `npm run balances` | 12 Privy agent wallets + facilitator created; EIP-712 domain verified against live USDC (DOMAIN_SEPARATOR matches); payment path complete. Needs USDC + ETH sent to the facilitator |
+| G3 Brains | **built, R1 blocked on key** | `node --env-file=.env scripts/g3-risk.mjs` | Enricher + R1/R2/R4 + findings carrying real Privy rule JSON. R1 needs `GRAPH_API_KEY` (Subgraph Studio — the Graph Market key is rejected). R4 validated on live data |
+| G4 Backtest | **done** ✅ | `curl -X POST localhost:8787/v1/findings/{id}/backtest` | **PASS.** Returns `would_block {count,usd,tx[]}` + `false_positives {count,vendors[]}`. Correctly advises against enforcing a vendor with 302 independent payers |
 | G5 Enforcement loop | not started | — | — |
 | G6 Surfaces | not started | — | — |
 | G7 Ship | not started | — | — |
@@ -271,3 +271,42 @@ than a raw stream read.
   where `tx.from` attribution is accidentally correct, and a risk rule must not flag it.
 
 **Schema is FROZEN** at `papertrail/postgres/schema.sql`. Next: G2.
+
+### 2026-09-13 — G2 built (blocked on funding), G3 built, G4 PASSED
+
+**G2** — 12 Privy agent wallets + 1 facilitator created, each agent with its own policy.
+The agent/facilitator split is the substance: the agent signs the EIP-3009 authorization and
+the facilitator broadcasts it, so our own payments land with `payer != tx.from`, the same
+shape as the 99.7% measured across Base.
+
+Verified the EIP-712 domain against the live contract rather than trusting it — read `name`,
+`version` and `DOMAIN_SEPARATOR` from USDC on Base, recomputed the separator from what we
+would sign, and they **match**. A wrong name or version yields a signature that looks valid
+and fails on-chain, which would have cost real funds to discover.
+
+Blocked only on funding.
+
+**G3** — enricher against the Agent0 subgraph on Base, plus R1/R2/R4. Each finding carries a
+`proposed_rule` that is literally the JSON POSTed to Privy, so a human approves the thing
+that gets enforced rather than a description of it.
+
+Two honesty decisions recorded: R1 **skips loudly** when the registry has not been checked
+instead of reporting "no unregistered vendors", and R4 is marked **advisory** because the
+facilitator is not a field of the EIP-3009 message and therefore cannot be denied at signing
+time at all.
+
+R1 needs `GRAPH_API_KEY` — the Graph **Market** key used for Substreams is rejected by the
+subgraph gateway as "malformed API key". Two Graph products, two credentials.
+
+**G4 PASSED** — `POST /v1/findings/{id}/backtest` returns the required shape, and the first
+real result is the useful kind:
+
+```json
+"would_block":     { "count": 0, "usd": "0", "tx": [] },
+"false_positives": { "count": 1, "detail": [{ "independent_payers": 302 }] }
+```
+
+The rule would stop nothing of ours and targets a vendor 302 independent payers use, so the
+backtest advises **against** enforcing it. Corrected a real semantic bug found while testing:
+the first version reported the vendor's *payers* as false positives, which a rule on our own
+wallets cannot block. `blast_radius` now carries that context separately and labelled.
