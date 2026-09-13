@@ -86,6 +86,11 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
     const key = `${req.method} ${url.pathname}`;
 
+    // Quiet the browser's automatic favicon probe rather than logging a 404.
+    if (req.method === 'GET' && url.pathname === '/favicon.ico') {
+      res.writeHead(204); return res.end();
+    }
+
     // Console
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       const html = readFileSync(new URL('./console.html', import.meta.url));
@@ -118,6 +123,52 @@ const server = createServer(async (req, res) => {
             result.window?.to_block ?? null]);
       }
       return json(res, 200, { finding_id: id, rule: finding.rule, subject: finding.subject, ...result });
+    }
+
+    // POST /v1/findings/{id}/approve - the G5 handoff into Privy.
+    const ap = url.pathname.match(/^\/v1\/findings\/(.+)\/approve$/);
+    if (req.method === 'POST' && ap) {
+      const id = decodeURIComponent(ap[1]);
+      const { rows } = await db.query('select * from findings where id = $1', [id]);
+      if (!rows.length) return json(res, 404, { error: `no finding ${id}` });
+      const finding = rows[0];
+
+      if (finding.proposed_rule?._advisory) {
+        return json(res, 400, {
+          error: 'Advisory finding cannot be enforced at signing time. '
+               + 'The facilitator is not a field of the EIP-3009 message.',
+        });
+      }
+      if (!fleet) {
+        return json(res, 400, { error: 'No fleet.json - nothing to attach a policy rule to.' });
+      }
+
+      // Require a backtest first. Approving a rule nobody has replayed is exactly
+      // the mistake this tool exists to prevent.
+      const { rows: bt } = await db.query(
+        'select * from backtests where finding_id = $1 order by ran_at desc limit 1', [id]);
+      if (!bt.length) {
+        return json(res, 409, {
+          error: 'Backtest this finding before approving it.',
+          hint: `POST /v1/findings/${encodeURIComponent(id)}/backtest`,
+        });
+      }
+
+      await db.query("update findings set status = 'approved' where id = $1", [id]);
+      const { _reason, ...postable } = finding.proposed_rule;
+      return json(res, 200, {
+        finding_id: id,
+        status: 'approved',
+        message: 'Approved. Run scripts/g5-enforce.mjs to append this rule to the fleet policies.',
+        rule_to_append: postable,
+        target_policies: fleet.agents.map((a) => a.policy_id),
+        backtest: {
+          would_block: bt[0].would_block_count,
+          would_block_usd: bt[0].would_block_usd,
+          false_positives: bt[0].false_positive_count,
+        },
+        enforced: false,
+      });
     }
 
     const handler = routes[key];
