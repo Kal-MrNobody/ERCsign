@@ -7,7 +7,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 | G0a Privy signature gating | **done** ✅ | `node --env-file=.env scripts/g0a-signature-gate.mjs` | **PASS.** Sign → 200; append DENY on `message.to`; identical payload → **400 `policy_violation`**; different vendor, same wallet → 200. Deterministic over 3 runs. Fallback NOT needed |
 | G0b Substreams liveness | **done** ✅ | `./scripts/g0b-liveness.sh` | **PASS.** 12,351 live payments over 10,145 Base blocks via a Graph Market endpoint. `payer != tx.from` on **99.6 %** of them; `payer` never empty; 0 `payment_id` collisions |
 | G1 Ledger | **done** ✅ | `./scripts/g1-verify.sh` | **PASS.** 908 live Base payments, sum(amount_usd)=5065.56; `payer != facilitator` on 905 (99.7%); 0 payment_id collisions; 183 vendors. Schema FROZEN |
-| G2 Fleet | **built, blocked on funding** | `npm run balances` | 12 Privy agent wallets + facilitator created; EIP-712 domain verified against live USDC (DOMAIN_SEPARATOR matches); payment path complete. Needs USDC + ETH sent to the facilitator |
+| G2 Fleet | **done** ✅ | `node --env-file=.env scripts/g2-pay.mjs` | **PASS.** 8 real x402 payments settled on Base, **8/8 with `payer != tx.from`**. 4 more refused live by our own G5 policy rule |
 | G3 Brains | **done** ✅ | `node --env-file=.env scripts/g3-enrich.mjs && node --env-file=.env scripts/g3-risk.mjs` | **PASS.** 230 vendors enriched against the live ERC-8004 subgraph: 2 registered, 228 not. 228 R1 findings, $5,000.57 exposure, each carrying enforceable Privy rule JSON |
 | G4 Backtest | **done** ✅ | `curl -X POST localhost:8787/v1/findings/{id}/backtest` | **PASS.** Returns `would_block {count,usd,tx[]}` + `false_positives {count,vendors[]}`. Correctly advises against enforcing a vendor with 302 independent payers |
 | G5 Enforcement loop | **done** ✅ | `node --env-file=.env scripts/g5-enforce.mjs <finding_id>` | **PASS ×4.** Agent signs → rule appended to 12 policies → identical payload **REFUSED (policy_violation)** → different vendor still signs. Plus a real **2-of-2 key quorum**: Privy refuses unsigned and 1-of-2 changes |
@@ -402,3 +402,23 @@ Funding note: the USDC and ETH were sent to the correct facilitator address but 
 mainnet**, not Base (verified: both transactions succeed on Ethereum, neither exists on Base).
 The funds are safe — Privy controls the same address on every EVM chain — but G2 needs them on
 Base.
+
+### 2026-09-13 — G2 PASSED, and the enforcement fired on its own
+
+Funded on Base, distributed to 6 agents, ran the payment loop. Agents sign EIP-3009
+authorizations through Privy; the facilitator broadcasts them.
+
+```
+8 settled · 4 refused by policy
+8/8 settled payments have payer != tx.from
+```
+
+**The result nobody arranged:** agents 03 and 05 were assigned a recipient that happened to be
+the vendor blocked during the G5 rehearsal hours earlier. Privy refused their signatures mid-run
+with `policy_violation`, while the four agents whose recipients carried no rule paid normally.
+
+A risk finding became a policy rule, a human approved it, and it then silently stopped real
+money reaching that vendor — at signing time, so there was nothing to broadcast and nothing to
+reverse. That is the entire project working end to end on live funds, unprompted.
+
+All nine gates now pass.

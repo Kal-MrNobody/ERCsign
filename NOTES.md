@@ -1109,3 +1109,63 @@ This is a real finding about the ecosystem and belongs in the submission as such
 adoption among live x402 payees is ~1 %, which is itself worth reporting, and it is why the
 project leans on *behavioural* signals (concentration, facilitator novelty) rather than
 registry membership alone.
+
+---
+
+## 15. G2 RESULT — PASS. Real x402 payments, and the enforcement fired unprompted.
+
+Funded on Base (1.01 USDC + 0.00041 ETH), distributed 0.15 USDC to 6 agents, then ran the
+payment loop: each agent signs an EIP-3009 authorization through Privy, the facilitator
+broadcasts `transferWithAuthorization`.
+
+```
+8 payments settled
+4 refused by policy
+```
+
+### 15.1 The pipeline reproduces our own payments correctly
+
+`map_payments` over blocks 51,254,630–51,254,640 returns all 8, every one attributed to the
+agent rather than the relayer:
+
+```
+payer       0x3851a559…ad01   <- agent-01, the real spender
+facilitator 0x97b0dbd8…c82f   <- our relayer
+txFrom      0x97b0dbd8…c82f   <- identical to facilitator
+payer != tx.from : True
+payment_id  0xcaadb14e…ef31:344
+```
+
+**8 / 8 with `payer != tx.from`.** Our fleet reproduces the same misattribution pattern
+measured across Base at 99.6 %, so the ledger's central claim holds on payments whose
+provenance we control completely.
+
+The planted vendor `0x7a2387ce87653ff6032f6e49281ad8cf911c9e0e` appears as a recipient on 4
+of them — a fresh address no registry has ever seen, which is R1's target in real data.
+
+### 15.2 ⭐ The G5 enforcement fired during a live payment run, unprompted
+
+Not staged. Agents 03 and 05 were assigned a recipient that happened to be
+`0xcc1984e79726e7a0ae2b9df2ac9e79fb4983930e` — the vendor whose DENY rule was appended to
+all 12 agent policies hours earlier during the G5 rehearsal. In this run they were refused:
+
+```
+agent-03 -> 0xcc1984e7…  RPC request denied due to policy violation
+agent-05 -> 0xcc1984e7…  RPC request denied due to policy violation
+```
+
+while agents 01, 02, 04 and 06 — whose recipients carried no rule — paid normally.
+
+⇒ This is the whole thesis demonstrated without arranging it: a risk finding became a policy
+rule, a human approved it, and it then **silently stopped real money** from reaching that
+vendor while leaving every other payment untouched. The refusal happened at signing time, so
+those agents never obtained a signature to hand to a facilitator — there was nothing to
+broadcast, and nothing to reverse.
+
+It also validates the per-wallet design: blocking one vendor degraded no other agent.
+
+### 15.3 Sink note
+
+The `payments` table lags because stores backfill from `initialBlock`, and the payments sit
+~19k blocks ahead of where the sink had reached. The pipeline output above is the substantive
+proof — the table is the same data after transport. Sinking continues in the background.
