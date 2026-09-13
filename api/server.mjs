@@ -92,6 +92,14 @@ const server = createServer(async (req, res) => {
       res.writeHead(204); return res.end();
     }
 
+    // OpenAPI spec - the Bazantic gateway needs a --spec-url, and an agent
+    // reading the API benefits from the same description either way.
+    if (req.method === 'GET' && url.pathname === '/openapi.json') {
+      const spec = readFileSync(new URL('./openapi.json', import.meta.url));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(spec);
+    }
+
     // Console
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       const html = readFileSync(new URL('./console.html', import.meta.url));
