@@ -70,6 +70,20 @@ See [`docs/architecture.svg`](docs/architecture.svg) for the rendered diagram.
 
 ## The loop, demonstrated
 
+**One command runs the whole story on live data** — reconstruct spend → flag a vendor →
+backtest → human quorum approves → the next payment is blocked at signing time:
+
+```bash
+node --env-file=.env scripts/e2e-demo.mjs
+```
+
+It reuses the real code paths (live ledger read, `lib/backtest.mjs`, a live Privy 2-of-2 key
+quorum, and a real fleet agent signing against USDC on Base), is re-runnable (it resets its
+own demo rule at both ends and leaves the fleet policies untouched), and degrades honestly —
+with no Privy credentials it still runs the first three stages on live data and says why the
+last two were skipped. A captured run is in
+[`docs/demo-transcript.txt`](docs/demo-transcript.txt). The signing-gate proof at its core:
+
 ```
 [before] agent-01 signing to <vendor>           -> SIGNED
          appended to 12 policies, no rule lost
