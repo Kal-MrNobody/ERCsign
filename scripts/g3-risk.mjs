@@ -114,7 +114,10 @@ if (OURS.length === 0) {
 // ---- R4 : facilitator outside the computed allowlist ------------------------
 // The allowlist is COMPUTED from observed activity - the upstream x402 package
 // deliberately applies no facilitator filtering, so this is ours to derive.
-{
+if (OURS.length === 0) {
+  console.log('R4 SKIPPED - no fleet.json. Without a payer scope this would aggregate');
+  console.log('             every payment on the chain and report them as "our" exposure.\n');
+} else {
   const { rows } = await db.query(`
     with activity as (
       select facilitator, count(*)::int as relayed from payments group by facilitator
@@ -125,7 +128,7 @@ if (OURS.length === 0) {
              sum(p.amount_usd) as exposure_usd,
              (array_agg(p.tx_hash order by p.block_num desc))[1:5] as evidence_tx
       from payments p
-      where ($1::text[] = '{}' or p.payer = any($1))
+      where p.payer = any($1)
       group by p.facilitator
     )
     select o.*, a.relayed

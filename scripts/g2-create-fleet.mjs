@@ -38,6 +38,16 @@ const facilitatorWallet = await createWallet();
 console.log(`facilitator  ${facilitatorWallet.address}  (${facilitatorWallet.id})`);
 
 const agents = [];
+// Persist after EVERY wallet. Writing only at the end meant a failure at agent
+// 7 of 12 orphaned the already-created wallets and policies, which is exactly
+// what this file's idempotency note promises cannot happen.
+const persist = () => writeFileSync(FLEET_PATH, JSON.stringify({
+  created_at: new Date().toISOString(), chain: 'base-mainnet', chain_id: 8453,
+  facilitator: { address: facilitatorWallet.address, wallet_id: facilitatorWallet.id },
+  agents,
+}, null, 2));
+persist();
+
 for (let i = 1; i <= AGENT_COUNT; i++) {
   const name = `agent-${String(i).padStart(2, '0')}`;
   // One policy per wallet - Privy documents a max of 1 policy per wallet, so the
@@ -45,17 +55,9 @@ for (let i = 1; i <= AGENT_COUNT; i++) {
   const policy = await createAgentPolicy(`RedFlag ${name}`);
   const wallet = await createWallet([policy.id]);
   agents.push({ name, address: wallet.address, wallet_id: wallet.id, policy_id: policy.id });
+  persist();
   console.log(`${name}     ${wallet.address}  policy=${policy.id}`);
 }
-
-const fleet = {
-  created_at: new Date().toISOString(),
-  chain: 'base-mainnet',
-  chain_id: 8453,
-  facilitator: { address: facilitatorWallet.address, wallet_id: facilitatorWallet.id },
-  agents,
-};
-writeFileSync(FLEET_PATH, JSON.stringify(fleet, null, 2));
 
 console.log(`\nWrote ${FLEET_PATH} (gitignored - it contains wallet ids).`);
 console.log('\nNEXT: fund the facilitator address above with USDC + a little ETH.');

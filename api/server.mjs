@@ -10,6 +10,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { pool } from '../lib/db.mjs';
 import { backtest } from '../lib/backtest.mjs';
+import { ruleFingerprint } from '../lib/rules.mjs';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const db = pool();
@@ -110,17 +111,20 @@ const server = createServer(async (req, res) => {
         await db.query(`
           insert into backtests (id, finding_id, ran_at, would_block_count, would_block_usd,
                                  would_block_tx, false_positive_count, false_positive_vendors,
-                                 window_from_block, window_to_block)
-          values ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9)
+                                 window_from_block, window_to_block, rule_fingerprint)
+          values ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9,$10)
           on conflict (id) do update set
             ran_at=now(), would_block_count=excluded.would_block_count,
             would_block_usd=excluded.would_block_usd, would_block_tx=excluded.would_block_tx,
             false_positive_count=excluded.false_positive_count,
-            false_positive_vendors=excluded.false_positive_vendors
+            false_positive_vendors=excluded.false_positive_vendors,
+            window_from_block=excluded.window_from_block,
+            window_to_block=excluded.window_to_block,
+            rule_fingerprint=excluded.rule_fingerprint
         `, [`bt:${id}`, id, result.would_block.count, result.would_block.usd,
             result.would_block.tx, result.false_positives.count,
             result.false_positives.vendors, result.window?.from_block ?? null,
-            result.window?.to_block ?? null]);
+            result.window?.to_block ?? null, ruleFingerprint(finding.proposed_rule)]);
       }
       return json(res, 200, { finding_id: id, rule: finding.rule, subject: finding.subject, ...result });
     }
@@ -150,6 +154,16 @@ const server = createServer(async (req, res) => {
       if (!bt.length) {
         return json(res, 409, {
           error: 'Backtest this finding before approving it.',
+          hint: `POST /v1/findings/${encodeURIComponent(id)}/backtest`,
+        });
+      }
+      // The backtest must have been run against THIS rule. g3-risk.mjs upserts
+      // proposed_rule in place, so a finding's rule can change under a stale
+      // backtest - approving on a replay of a different rule would defeat the
+      // entire guard.
+      if (bt[0].rule_fingerprint !== ruleFingerprint(finding.proposed_rule)) {
+        return json(res, 409, {
+          error: 'The rule changed since it was backtested. Re-run the backtest.',
           hint: `POST /v1/findings/${encodeURIComponent(id)}/backtest`,
         });
       }

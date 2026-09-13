@@ -52,7 +52,11 @@ CREATE TABLE IF NOT EXISTS backtests (
     false_positive_count INTEGER NOT NULL,
     false_positive_vendors TEXT[] NOT NULL,
     window_from_block   BIGINT,
-    window_to_block     BIGINT
+    window_to_block     BIGINT,
+    -- Binds this backtest to the exact rule it replayed. proposed_rule is
+    -- upserted in place, so without this a rule could be approved on a backtest
+    -- of an earlier, different rule.
+    rule_fingerprint    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtests_finding ON backtests (finding_id);

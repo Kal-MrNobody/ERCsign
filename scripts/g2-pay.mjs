@@ -75,8 +75,14 @@ async function pay(agent, to, label) {
   const res = await sendTransaction(fleet.facilitator.wallet_id, { to: USDC, data, value: '0x0' });
   const hash = res?.data?.hash ?? res?.hash;
   const receipt = await c.waitForTransactionReceipt({ hash, timeout: 120_000 });
-  console.log(`  ${agent.name} -> ${label}  ${fromUsdc(usdc(AMOUNT))} USDC  ${hash} [${receipt.status}]`);
-  return { hash, agent: agent.name, payer: agent.address, to, label, status: receipt.status };
+  // A mined transaction is not a successful one. A reverted
+  // transferWithAuthorization emits no payment, so counting it as settled would
+  // put a payment in our records that never happened on chain.
+  const reverted = receipt.status !== 'success';
+  console.log(`  ${agent.name} -> ${label}  ${fromUsdc(usdc(AMOUNT))} USDC  ${hash}` +
+              `  [${receipt.status}${reverted ? ' - REVERTED, not counted' : ''}]`);
+  return { hash, agent: agent.name, payer: agent.address, to, label,
+           status: receipt.status, settled: !reverted };
 }
 
 const results = [];
@@ -96,5 +102,11 @@ for (let round = 1; round <= ROUNDS; round++) {
 }
 
 writeFileSync(new URL('../g2-payments.json', import.meta.url), JSON.stringify(results, null, 2));
-console.log(`\n${results.filter(r => r.hash).length} payments settled. Written to g2-payments.json`);
+const settled = results.filter((r) => r.settled);
+const reverted = results.filter((r) => r.hash && !r.settled);
+const refused = results.filter((r) => r.refused);
+console.log(`\n${settled.length} payments settled` +
+            (reverted.length ? `, ${reverted.length} REVERTED` : '') +
+            (refused.length ? `, ${refused.length} refused by policy` : '') +
+            '. Written to g2-payments.json');
 console.log('These should now appear in the payments table via the live pipeline.');

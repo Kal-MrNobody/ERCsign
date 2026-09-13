@@ -48,7 +48,12 @@ for (const a of targets) {
   });
   const res = await sendTransaction(fleet.facilitator.wallet_id, { to: USDC, data, value: '0x0' });
   const hash = res?.data?.hash ?? res?.hash;
-  console.log(`${a.name}  -> ${hash}`);
-  await c.waitForTransactionReceipt({ hash, timeout: 120_000 });
+  const receipt = await c.waitForTransactionReceipt({ hash, timeout: 120_000 });
+  // Mined is not the same as succeeded; a reverted transfer moves no USDC.
+  if (receipt.status !== 'success') {
+    console.error(`${a.name}  -> ${hash} REVERTED - distribution failed, stopping.`);
+    process.exit(1);
+  }
+  console.log(`${a.name}  -> ${hash} ok`);
 }
 console.log('\nDone. Run `npm run balances` to confirm.');

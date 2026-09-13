@@ -1017,3 +1017,55 @@ The brief asks for read-modify-write with a version guard. Privy has no version 
   aborts before touching further policies.
 
 That is the honest equivalent of the guard the brief specified, given the API that exists.
+
+---
+
+## 13. Code review pass — 14 findings, all fixed
+
+A review of the full branch diff found 14 real defects. Three were in the exact safety
+properties this project claims, which is the uncomfortable and useful kind of finding.
+
+### 13.1 The three that mattered
+
+**A backtest was not bound to the rule it replayed.** The approve gate only checked that
+*some* backtest row existed, while `g3-risk.mjs` upserts `proposed_rule` in place without
+resetting `status`. So a rule could be edited after being backtested and then approved on the
+earlier rule's replay — silently defeating the "backtest before approving" guard that the
+console, the API and the MCP server all advertise.
+
+Fixed with `ruleFingerprint()` — a hash over only the *enforceable* part of the rule (method,
+action, conditions; annotation keys excluded because they do not change what gets enforced).
+Stored on the backtest row and compared at approval. Verified: mutating the rule after a
+backtest now returns **409 "The rule changed since it was backtested."**
+
+**`status='enforced'` was written before the verdict was evaluated.** A *failed* enforcement —
+where the agent demonstrably could still sign — was recorded as enforced. The worst possible
+lie for that table. Now written after the check, as `enforced` or back to `approved`.
+
+**An empty fleet made `would_block` vacuously 0.** A rule attaches to specific agent wallets,
+so with no wallets in scope it blocks nothing — but reporting `0` reads as *"this rule is
+harmless"* rather than *"not measured"*. Worse, the sibling query in the same file used the
+**opposite** empty-array convention, so false-positive counts came back populated beside a
+zero block count. Now refuses with `supported: false` and an explicit reason.
+
+### 13.2 The rest
+
+| Fix | Was |
+|---|---|
+| `g3-risk.mjs` R4 | no empty-fleet guard (R2 had one) — aggregated every chain payment as "our" exposure |
+| `g2-pay.mjs` | `receipt.status` logged but never checked — reverted payments counted as settled |
+| `g2-distribute.mjs` | receipt discarded entirely — reverted distributions reported as success |
+| `g2-create-fleet.mjs` | `fleet.json` written only after the loop — a failure at agent 7/12 orphaned wallets, contradicting the file's own idempotency claim |
+| `lib/agent0.mjs` | no `res.ok` check — gateway 402/429/502 HTML became an opaque `SyntaxError`, hiding the status |
+| `lib/agent0.mjs` | `avg_feedback` averaged only the first 100 entries but sat beside an uncapped `total_feedback`; now reports `avg_feedback_sample` |
+| `lib/privy.mjs` | idempotency key embedded `Date.now()`, so a retry created a duplicate — the exact failure the key exists to prevent |
+| `g5-quorum-setup.mjs` | created a new quorum + policy every run, orphaning the previous pair |
+| `backtests` upsert | `ON CONFLICT` dropped `window_from_block`/`to_block` on re-run |
+| `blast_radius` | summed per-vendor distinct payers, double-counting anyone paying two targeted vendors; now per-vendor |
+| `package.json` | `zod` imported directly but resolved only via npm hoisting from the MCP SDK |
+
+### 13.3 Verified after, not assumed
+
+`g1-verify.sh` PASS (908 rows, 99.7 %) · `cargo test` 4/4 · MCP handshake + 5 tools ·
+console renders with no JS errors · approve-after-mutation correctly 409s · empty-fleet
+backtest correctly refuses.

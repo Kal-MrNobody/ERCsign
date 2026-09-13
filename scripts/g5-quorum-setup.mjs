@@ -33,6 +33,15 @@ if (existsSync(keysPath)) {
 }
 
 // ---- 2. a 2-of-2 quorum ----------------------------------------------------
+// Reuse an existing quorum+policy rather than orphaning them on every run.
+const quorumPath = new URL('../quorum.json', import.meta.url);
+if (existsSync(quorumPath) && !process.env.G5_FORCE_NEW_QUORUM) {
+  const prev = JSON.parse(readFileSync(quorumPath, 'utf8'));
+  console.log(`quorum ${prev.key_quorum_id} and policy ${prev.policy_id} already exist.`);
+  console.log('Set G5_FORCE_NEW_QUORUM=1 to create a fresh pair.');
+  process.exit(0);
+}
+
 const quorum = await privy('POST', '/v1/key_quorums', {
   display_name: 'RedFlag_Trail enforcement quorum',
   public_keys: [keys.approver_a.public_key, keys.approver_b.public_key],

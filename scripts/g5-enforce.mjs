@@ -104,10 +104,15 @@ try { await signTypedData(agent.wallet_id, control); }
 catch (e) { ctl = 'REFUSED'; ctlCode = e.json?.code ?? e.status; }
 console.log(`[ctrl  ] ${agent.name} signing to a DIFFERENT vendor -> ${ctl}${ctlCode ? ` (${ctlCode})` : ''}`);
 
-await db.query("update findings set status='enforced' where id=$1", [findingId]);
-
 console.log('\n' + '='.repeat(64));
 const pass = before === 'SIGNED' && after === 'REFUSED' && code === 'policy_violation' && ctl === 'SIGNED';
+
+// Only record "enforced" once the verdict actually holds. Marking it before the
+// check meant a FAILED enforcement - where the agent demonstrably could still
+// sign - was stored as enforced, which is the worst possible lie for this table.
+await db.query('update findings set status=$2 where id=$1',
+               [findingId, pass ? 'enforced' : 'approved']);
+
 if (pass) {
   console.log('G5 PASS - the agent signed before, is REFUSED BY PRIVY after, and a');
   console.log('different vendor still signs. Enforcement is at signing time, in the');
