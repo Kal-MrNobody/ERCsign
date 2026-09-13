@@ -801,3 +801,64 @@ Pinax's own `evm-x402` writes **both** `log_index` (an `enumerate()` counter ove
 transaction's filtered logs) and `log_block_index` (`log.block_index`). The `enumerate()`
 value is **not** the receipt log index — it counts only x402-bearing logs. Only
 `log.block_index` is explorer-verifiable, confirming `payment_id = tx_hash:blockIndex`.
+
+---
+
+## 10. G1 RESULT — PASS. 908 live payments in Postgres, end to end.
+
+```
+select count(*), sum(amount_usd) from payments;
+ payments |  total_usd
+----------+-------------
+      908 | 5065.559044
+```
+
+| Check | Result |
+|---|---|
+| `payer` != `facilitator` | **905 / 908 (99.7 %)** |
+| `payment_id` collisions | **0** (908 rows, 908 distinct ids) |
+| `payment_id` reconstructs as `tx_hash:log_block_index` | **908 / 908** |
+| Vendors in first-seen store | 183 |
+| Blocks sunk | 51,234,998 .. 51,235,713 |
+
+The 99.7 % independently reproduces G0b's 99.6 %, this time through the **whole pipeline**
+(compose → eth_call → normalise → store → sink → SQL) rather than a raw stream read.
+
+### 10.1 The decimals RPC works in-module
+
+`decimals: 6` came back for USDC via the batched `eth_call`, and `10000` scaled to `0.01`.
+This closes §5.3 — the plan that replaced the brief's unavailable `erc20-tokens` decimals is
+confirmed working against the live chain, not just argued for.
+
+### 10.2 `payer == facilitator` is a real pattern, not a bug
+
+Three of 908 rows have `payer == facilitator`, all from one address
+(`0x66c40946b0dffd04be467e18309857307ecd37cb`) which relays its own payments. A self-relaying
+agent is legitimate x402 usage. Worth noting because it is the one case where attributing by
+`tx.from` happens to be correct — and a risk rule must not treat it as anomalous.
+
+### 10.3 `[CORRECTION]` Two sink mechanics the brief does not mention
+
+1. **Stores are backfilled from their `initialBlock`.** Every module defaults to `0`, so the
+   first sink run sat at block ~708,000 rescanning Base from genesis and never flushed a row,
+   despite a requested range at 51.2M. Every module now carries an explicit `initialBlock`.
+   This is also semantically right: x402 does not exist for most of Base's history.
+2. **`--batch-block-flush-interval` defaults to 1000 blocks.** A test range shorter than that
+   buffers everything and flushes nothing. Short runs need an explicit smaller interval.
+
+Also: `substreams-sink-sql` rejects the `postgresql://` scheme — it accepts only
+`psql`, `postgres`, `clickhouse`. And the sink manifest must import
+`substreams-sink-sql-protodefs-v1.0.7.spkg`, or `substreams pack` cannot resolve
+`sf.substreams.sink.sql.v1.Service`.
+
+### 10.4 Composition is real, and provable
+
+The packed `papertrail-v0.1.0.spkg` carries the imported module at hash
+`4aa30170e0d6f3b8ee5f58efce62dc55de751fda` — **byte-identical to the standalone
+`x402-v0.1.0.spkg`**. The composition reuses the exact upstream module rather than
+vendoring a copy of its logic, which is the leverage claim the Composable track asks to see.
+
+### 10.5 Schema is FROZEN here
+
+`papertrail/postgres/schema.sql` is the G1 freeze point. G3–G6 read these columns; changing
+them from here is a migration, not an edit.

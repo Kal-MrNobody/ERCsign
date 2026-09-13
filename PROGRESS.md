@@ -6,7 +6,7 @@ One line per gate. Status is one of: `blocked`, `in progress`, `done`.
 |---|---|---|---|
 | G0a Privy signature gating | **done** ✅ | `node --env-file=.env scripts/g0a-signature-gate.mjs` | **PASS.** Sign → 200; append DENY on `message.to`; identical payload → **400 `policy_violation`**; different vendor, same wallet → 200. Deterministic over 3 runs. Fallback NOT needed |
 | G0b Substreams liveness | **done** ✅ | `./scripts/g0b-liveness.sh` | **PASS.** 12,351 live payments over 10,145 Base blocks via a Graph Market endpoint. `payer != tx.from` on **99.6 %** of them; `payer` never empty; 0 `payment_id` collisions |
-| G1 Ledger | not started | `psql -c 'select count(*), sum(amount_usd) from payments'` | — |
+| G1 Ledger | **done** ✅ | `./scripts/g1-verify.sh` | **PASS.** 908 live Base payments, sum(amount_usd)=5065.56; `payer != facilitator` on 905 (99.7%); 0 payment_id collisions; 183 vendors. Schema FROZEN |
 | G2 Fleet | not started | — | — |
 | G3 Brains | not started | — | — |
 | G4 Backtest | not started | — | — |
@@ -229,3 +229,45 @@ auth. The script handles all of it idempotently.
 
 Also recorded: passwords in connection URIs must be percent-encoded (`@` -> `%40`), or the
 URI parser reads the `@` as the host separator.
+
+### 2026-09-13 — G1 PASSED
+
+The full pipeline runs end to end on live Base data:
+compose x402 + erc20-tokens -> in-module `eth_call` for decimals -> normalise -> stores ->
+`db_out` -> `substreams-sink-sql` -> Postgres.
+
+```
+ payments |  total_usd
+----------+-------------
+      908 | 5065.559044
+
+payer != facilitator : 905 / 908  (99.7%)
+payment_id collisions: 0
+vendors (first-seen) : 183
+blocks sunk          : 51,234,998 .. 51,235,713
+```
+
+The 99.7% independently reproduces G0b's 99.6%, this time through the whole pipeline rather
+than a raw stream read.
+
+- **The decimals plan is confirmed working**, not just argued: `decimals: 6` came back for
+  USDC via batched `eth_call` and `10000` scaled to `0.01`. This closes the gap left when
+  `erc20-tokens` turned out not to carry decimals.
+- **`amount_usd` vs `amount_decimal` are separate columns.** Decimals alone do not make a
+  value USD, so `amount_usd` is NULL for anything that is not a recognised USD stablecoin and
+  `SUM(amount_usd)` stays truthful.
+- **Composition is provable:** the packed spkg carries the imported x402 module at hash
+  `4aa30170...`, byte-identical to the standalone package — the exact upstream module is
+  reused, not copied.
+- **Honesty check recorded (NOTES.md §9.1):** Pinax already ships `evm-x402`, a flat 1:1 dump
+  of x402 events. We must not claim the category. `papertrail` differs by composing x402 WITH
+  erc20-tokens, computing a facilitator allowlist, sourcing decimals, and keeping a vendor
+  first-seen store — none of which `evm-x402` does.
+- **Two sink mechanics cost a cycle each** and are now documented: stores backfill from
+  `initialBlock` (defaulting to 0 made the sink rescan 51M blocks and flush nothing), and
+  `--batch-block-flush-interval` defaults to 1000 blocks, which is larger than a short test
+  range.
+- `payer == facilitator` on 3 rows is a genuine self-relaying agent, not a bug — the one case
+  where `tx.from` attribution is accidentally correct, and a risk rule must not flag it.
+
+**Schema is FROZEN** at `papertrail/postgres/schema.sql`. Next: G2.
