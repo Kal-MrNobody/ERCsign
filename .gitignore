@@ -22,3 +22,9 @@ __pycache__/
 papertrail/target/
 papertrail/src/pb/
 vendor/
+
+# fleet (wallet ids)
+fleet.json
+planted-vendor.json
+g2-payments.json
+node_modules/

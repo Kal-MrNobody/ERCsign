@@ -1,0 +1,16 @@
+{
+  "name": "redflag-trail",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Payer-attributed x402 spend ledger with signing-time enforcement",
+  "scripts": {
+    "fleet": "node --env-file=.env scripts/g2-create-fleet.mjs",
+    "balances": "node --env-file=.env scripts/g2-balances.mjs",
+    "distribute": "node --env-file=.env scripts/g2-distribute.mjs",
+    "pay": "node --env-file=.env scripts/g2-pay.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.56.3"
+  }
+}
