@@ -6,94 +6,198 @@ blocks the next payment **at signing time**.
 
 Built for ETHOnline 2026.
 
+---
+
 ## The number that justifies this project
 
 Streaming every x402 payment on Base over a 10,145-block window:
 
 | | count | share |
 |---|---|---|
-| **`payer` != `tx.from`** | **12,291** | **99.6 %** |
+| **`payer` ≠ `tx.from`** | **12,291** | **99.6 %** |
 | `payer` == `tx.from` | 51 | 0.4 % |
 
-Attributing agent spend by `tx.from` misattributes **99.6% of x402 payments** to whichever
-facilitator relayed them. Measured, not assumed — reproduce it with
-`./scripts/g0b-liveness.sh`.
+In x402 the agent **signs** an EIP-3009 authorization and a **facilitator broadcasts** it. So
+the on-chain `tx.from` is the facilitator, not the spender. Attributing agent spend by
+`tx.from` misattributes **99.6 % of x402 payments on Base** to whichever facilitator relayed
+them.
 
-## The core idea
+Measured, not assumed. Reproduce it: `./scripts/g0b-liveness.sh`
 
-In x402, the agent **signs** an EIP-3009 authorization and a **facilitator** broadcasts it.
-So the on-chain `tx.from` is the facilitator, not the spender. Attributing spend by `tx.from`
-attributes every agent's spend to whichever facilitator relayed it.
+---
 
-RedFlag_Trail attributes spend by the `payer` decoded from the authorization, and enforces on
-`eth_signTypedData_v4` — the moment of signing — rather than on `eth_sendTransaction`, which
-the agent never calls.
+## What it does
 
-## Setup
-
-```bash
-./scripts/bootstrap.sh   # substreams CLI + pinned Substreams packages into vendor/
-cp .env.example .env     # then fill in
+```
+   Base mainnet
+        │
+        │  Substreams (The Graph Market)
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  papertrail  — composed Substreams package                │
+│                                                           │
+│   x402:map_events ──┐                                     │
+│                     ├─▶ map_payments ──▶ store_vendor_…   │
+│   erc20_tokens:…  ──┘        │          store_facilitator_│
+│                              │                            │
+│                    eth_call decimals()                    │
+│                              ▼                            │
+│                           db_out                          │
+└───────────────────────────────────────────────────────────┘
+        │  substreams-sink-sql
+        ▼
+   payments ── vendors ── vendor_registry ── findings ── backtests
+        │                        ▲               │
+        │            Agent0 / ERC-8004 subgraph  │
+        │                                        │
+        ├──▶ MCP server  (spend_summary, vendor_risk, list_findings,
+        │                 backtest_rule, propose_enforcement)
+        │
+        └──▶ review console ──▶ backtest ──▶ human approve
+                                                │
+                                     2-of-2 key quorum
+                                                ▼
+                             POST /v1/policies/{id}/rules   (Privy)
+                                                │
+                                                ▼
+                        agent signs the same payment ──▶ REFUSED
+                                          (code: policy_violation)
 ```
 
-`bootstrap.sh` is idempotent. It pins `substreams` v1.16.6 and fetches the prebuilt Pinax
-packages from `raw.githubusercontent.com` (the GitHub **API** is not used — see NOTES.md
-§4.2), then prints each package's module hashes so the versions are auditable.
+See [`docs/architecture.svg`](docs/architecture.svg) for the rendered diagram.
 
-## Network requirements
+---
 
-This project talks to live third-party APIs by design — mocked or local-only data
-disqualifies the Graph tracks. When running inside a sandboxed environment, these hosts must
-be on the network egress allowlist:
+## The loop, demonstrated
 
-| Host | Needed for |
-|---|---|
-| `api.privy.io` | Privy wallet + policy API (G0a, G2, G5) |
-| `docs.privy.io` | Privy documentation lookups |
-| `*.thegraph.com` | Graph Market Substreams endpoint, Subgraph Studio (G0b, G1, G3) |
-| `mainnet.base.org` | Base RPC (G2) |
-| `*.pinax.network` | Prebuilt Substreams packages (G1) |
-| `bazantic.com` | Gateway and Recipes (G7) |
+```
+[before] agent-01 signing to <vendor>           -> SIGNED
+         appended to 12 policies, no rule lost
+[after ] agent-01 signing the IDENTICAL payload -> REFUSED (policy_violation)
+[ctrl  ] agent-01 signing to a DIFFERENT vendor -> SIGNED
+```
 
-Also required: `raw.githubusercontent.com` and `github.com` (release downloads), used by
-`bootstrap.sh`.
+The agent is refused **by Privy, not by our code**. That distinction is the point: a gate in
+our own client is something an agent routes around by not calling it. A policy refusal happens
+inside the signer, so no signature is ever produced to hand to a facilitator.
 
-A blocked host surfaces as `403 Host not in allowlist: <host>`.
+And the approval is enforced server-side too — a policy owned by a 2-of-2 key quorum refuses
+under-signed changes:
+
+```
+[unsigned] -> 401 Missing `privy-authorization-signature` header
+[1-of-2]   -> 401 Number of signatures does not match the authorization threshold
+[2-of-2]   -> ACCEPTED
+```
+
+Otherwise "a human quorum approves" would be a claim about our UI. Here the *server* rejects
+the change, so bypassing our console does not bypass the control.
+
+---
+
+## Quick start
+
+```bash
+./scripts/bootstrap.sh          # substreams CLI, wasm target, sink, pinned packages
+./scripts/db-up.sh              # local Postgres
+cp .env.example .env            # fill in credentials
+
+# 1. prove the substream is live and measure the attribution gap
+./scripts/g0b-liveness.sh
+
+# 2. build + sink the ledger
+cd papertrail && cargo build --target wasm32-unknown-unknown --release
+substreams pack substreams.yaml && substreams pack postgres/substreams.yaml
+substreams-sink-sql setup "psql://…" postgres/papertrail-postgres-v0.1.0.spkg
+substreams-sink-sql run    "psql://…" postgres/papertrail-postgres-v0.1.0.spkg <start:stop> \
+  -e base-mainnet.streamingfast.io:443 --batch-block-flush-interval 50
+cd .. && ./scripts/g1-verify.sh
+
+# 3. enrich, score, review
+node --env-file=.env scripts/g3-enrich.mjs
+node --env-file=.env scripts/g3-risk.mjs
+node --env-file=.env api/server.mjs        # console on :8787
+
+# 4. enforce (after a human approves in the console)
+node --env-file=.env scripts/g5-enforce.mjs <finding_id>
+```
+
+MCP: see [`mcp/README.md`](mcp/README.md).
+
+---
+
+## What is ours, precisely
+
+Pinax already ships `evm-x402`, a flat 1:1 dump of x402 events to a table. **We do not claim
+that category.** `papertrail` differs on specific axes:
+
+| | `evm-x402` (Pinax) | `papertrail` (ours) |
+|---|---|---|
+| Composes x402 **+ erc20-tokens** | ✗ x402 only | ✓ |
+| Computed facilitator allowlist | ✗ | ✓ — the x402 package explicitly applies none |
+| Token `decimals` → normalised amount | ✗ | ✓ via batched `eth_call` |
+| Vendor first-seen store | ✗ stateless | ✓ enables R2 |
+| Payer-attributed ledger | ✗ raw dump | ✓ |
+
+Composition is provable, not asserted: the packed spkg carries the imported x402 module at
+hash `4aa30170e0d6f3b8ee5f58efce62dc55de751fda` — byte-identical to the standalone package,
+so the exact upstream module is reused rather than copied.
+
+---
+
+## Things we refuse to overstate
+
+These are deliberate. A risk tool that inflates its own certainty is worse than none.
+
+- **Every payment is `confidence: "heuristic"`.** The upstream EIP-3009 reconstruction joins
+  `AuthorizationUsed` + `Transfer` + calldata; Pinax labels the result heuristic and we carry
+  that through to the `payments` table rather than dropping it. We *reconstruct* payments; we
+  do not prove settlement.
+- **`amount_usd` is NULL for anything that is not a USD stablecoin.** Decimals give a
+  decimal-scaled amount, not a dollar value — that needs a price feed we do not have. So
+  `SUM(amount_usd)` stays truthful and unpriced assets are visibly unpriced.
+- **R4 (unknown facilitator) is advisory and says so.** The facilitator is not a field of the
+  EIP-3009 message, so *no* signing-time rule can key on it. Claiming R4 enforcement would
+  promise something the mechanism cannot deliver.
+- **R1 skips loudly when the registry has not been checked**, instead of reporting "no
+  unregistered vendors". Absence of data is not evidence of safety.
+- **A finding cannot be approved before it is backtested** (HTTP 409). Approving a rule nobody
+  has replayed is exactly the mistake this tool exists to prevent.
+
+The backtest earns its keep by arguing *against* rules: on the busiest vendor in the ledger it
+returns `would_block: 0` and flags a likely false positive, because 302 independent payers use
+that vendor. The interesting output is the rule a human should **not** approve.
+
+---
 
 ## Status
 
-Both G0 kill tests are verified as far as they can be without credentials:
+| Gate | Status |
+|---|---|
+| G0a Privy signature gating | **done** — refusal on an in-message field, 3/3 runs |
+| G0b Substreams liveness | **done** — 12,351 live payments, 99.6 % attribution gap |
+| G1 Ledger | **done** — 908 rows sunk, schema frozen |
+| G2 Fleet | **built, unfunded** — 12 wallets + facilitator created; EIP-712 domain verified against live USDC |
+| G3 Brains | **built** — R1 needs a Subgraph Studio key |
+| G4 Backtest | **done** |
+| G5 Enforcement loop | **done** — 4 passes incl. 3 rehearsals, plus a live 2-of-2 quorum |
+| G6 Surfaces | **done** — 5 MCP tools + review console |
+| G7 Ship | in progress |
 
-- **G0a — PASSED.** ✅ Verified live: sign an EIP-3009 authorization → `200`; add a DENY
-  rule keyed on the `to` field *inside* the typed message; sign the byte-identical payload
-  again → **`400 policy_violation`**; sign to a different vendor on the same wallet →
-  `200`. Enforcement is server-side at signing time, so the agent never obtains a signature
-  to hand to a facilitator — and the pre-sign-gate fallback is **not** needed.
-- **G0b — PASSED.** ✅ Streamed **12,351 live x402 payments** over 10,145 Base blocks from a
-  Graph Market Substreams endpoint. `payer` differed from `tx.from` on **99.6%** of them,
-  and was never empty.
+`PROGRESS.md` is the gate ledger. `NOTES.md` records every confirmed API shape with an
+evidence grade, and every place a vendor's docs contradicted our assumptions.
 
-See `PROGRESS.md` for the gate ledger and `NOTES.md` for every confirmed API shape with its
-evidence grade.
+## Network requirements
 
-### Reproducing G0b
+Live third-party APIs by design — mocked or local-only data disqualifies the Graph tracks.
 
-```bash
-./scripts/bootstrap.sh     # substreams CLI + packages
-cp .env.example .env       # set SUBSTREAMS_API_KEY (a 'server_...' Graph Market key)
-./scripts/g0b-liveness.sh  # streams live Base data, prints the attribution split
-```
+| Host | For |
+|---|---|
+| `api.privy.io` | wallets, policies, key quorums |
+| `base-mainnet.streamingfast.io:443` | Substreams (Graph Market) |
+| `gateway.thegraph.com` | Agent0 / ERC-8004 subgraph |
+| `base-mainnet.g.alchemy.com` | Base RPC (`decimals()`, broadcasts) |
+| `raw.githubusercontent.com` | prebuilt Substreams packages |
 
-The `server_` key is **not** the token the CLI consumes — the endpoints reject it. It must be
-exchanged for a JWT, which `scripts/substreams-auth.sh` does automatically.
-
-### Reproducing G0a
-
-```bash
-cp .env.example .env    # set PRIVY_APP_ID and PRIVY_APP_SECRET
-node --env-file=.env scripts/g0a-signature-gate.mjs
-```
-
-Exit code 0 means Privy refused the second signature *and* still signed for a different
-vendor. The script fails loudly rather than reporting a pass if either half does not hold —
-a refusal that is not `code: policy_violation` is treated as invalid, not as success.
+⚠️ `substreams-sink-sql` speaks the native Postgres wire protocol on **5432**. A sandbox
+limited to 443 cannot reach a hosted database at all — use a local Postgres there.
