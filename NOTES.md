@@ -702,3 +702,102 @@ The server ships installed but **stopped**, and `service postgresql start` is re
 every container start. `listen_addresses = localhost`, so connect over `127.0.0.1` — the unix
 socket path fails with peer authentication unless running as the `postgres` OS user.
 `scripts/db-up.sh` does the whole dance idempotently.
+
+---
+
+## 9. G1 design — confirmed patterns, and an honesty check on novelty
+
+### 9.1 ⚠️ `evm-x402` ALREADY EXISTS — adjust the novelty claim
+
+Pinax ships **`evm-x402-v0.1.0.spkg`**, a `db_out` that writes x402 payments to a flat
+`x402_payments` table. **We must not claim to be first to index or sink x402 payments.**
+
+What it is (read from `evm-x402/substreams.yaml` and `src/lib.rs`):
+
+```yaml
+imports:
+  database_changes: ../spkg/substreams-database-change-v2.0.0.spkg
+  x402: ../spkg/x402-v0.1.0.spkg          # <- the ONLY data import
+```
+
+A 1:1 column dump of the raw event — every `tx_*`, `log_*`, `call_*` and payment field
+written verbatim. It imports **no** other data package, holds **no** stores, and does no
+allowlisting, decimals lookup, or normalisation.
+
+⇒ `papertrail` is differentiated on exactly these axes, and the write-up should say so in
+these terms rather than claiming the category:
+
+| | `evm-x402` (Pinax) | `papertrail` (ours) |
+|---|---|---|
+| Composes x402 **+ erc20-tokens** | ✗ x402 only | ✓ |
+| Computed facilitator allowlist | ✗ | ✓ (the thing Pinax explicitly defers) |
+| Token `decimals` → normalised amount | ✗ | ✓ via `store_token_decimals` (new module) |
+| Vendor first-seen store | ✗ stateless | ✓ store, enables R2 |
+| Payer-attributed ledger | ✗ raw dump | ✓ |
+
+### 9.2 `[DOC]` Composition pattern — verbatim from `evm-transfers/substreams.yaml`
+
+```yaml
+imports:
+  database_changes: ../spkg/substreams-database-change-v2.0.0.spkg
+  erc20_tokens: ../spkg/erc20-tokens-v0.4.0.spkg
+modules:
+  - name: db_out
+    kind: map
+    inputs:
+      - params: string
+      - source: sf.substreams.v1.Clock
+      - map: erc20_tokens:map_events      # <- import_name:module_name
+    output:
+      type: proto:sf.substreams.sink.database.v1.DatabaseChanges
+```
+
+### 9.3 `[DOC]` Batch eth_call pattern — verbatim from `erc20/balances/src/calls.rs`
+
+```rust
+use substreams_ethereum::rpc::RpcBatch;
+use substreams_abis::standard::erc20;
+
+let batch = chunk.iter().fold(RpcBatch::new(), |batch, (contract, owner)| {
+    batch.add(erc20::functions::BalanceOf { account: owner.to_vec() }, contract.to_vec())
+});
+let responses = batch.execute().expect("...").responses;
+RpcBatch::decode::<BigInt, erc20::functions::BalanceOf>(&responses[i])
+```
+
+`substreams_abis::standard::erc20::functions::Decimals` **exists** (confirmed on docs.rs
+alongside `Symbol`, `Name`, `BalanceOf`), so `store_token_decimals` uses the same shape.
+
+### 9.4 `[DOC]` Dependency versions — Pinax's known-good set, not "latest"
+
+```toml
+substreams               = "0.7.0"
+substreams-ethereum      = "0.11.1"
+substreams-database-change = "3.0.0"
+substreams-abis          = { git = "https://github.com/pinax-network/substreams-abis.git", tag = "v1.5.0" }
+prost                    = "0.13"
+```
+
+### 9.5 `[CORRECTION]` "USD normalisation via token decimals" is only valid for USD stablecoins
+
+The brief says G1 does "USD normalisation via token decimals". Decimals alone give a
+**decimal-adjusted amount**, not a USD value — that equivalence holds only because USDC is
+a USD stablecoin trading at par. For any other asset it needs a price feed, which we do not
+have.
+
+§7.4 already observed a **second, non-USDC asset** in a single 5.5-hour window, so this is
+not hypothetical.
+
+⇒ The schema carries **both**, and they must not be conflated:
+- `amount_decimal` — always set: `amount / 10^decimals`
+- `amount_usd` — set **only** for recognised USD stablecoins, `NULL` otherwise
+
+Summing `amount_usd` then remains truthful, and a non-stablecoin payment is visibly
+unpriced rather than silently counted as dollars.
+
+### 9.6 `[DOC]` Confirms the `payment_id` choice (§7.7)
+
+Pinax's own `evm-x402` writes **both** `log_index` (an `enumerate()` counter over the
+transaction's filtered logs) and `log_block_index` (`log.block_index`). The `enumerate()`
+value is **not** the receipt log index — it counts only x402-bearing logs. Only
+`log.block_index` is explorer-verifiable, confirming `payment_id = tx_hash:blockIndex`.

@@ -17,3 +17,8 @@ __pycache__/
 .DS_Store
 *.log
 .tmp/
+
+# rust / substreams build artifacts
+papertrail/target/
+papertrail/src/pb/
+vendor/
